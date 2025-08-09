@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://postgres:password@db:5432/scorecheck
+      - JWT_SECRET=your-super-secret-jwt-key-here
+      - PORT=3001
+    depends_on:
+      - db
+    volumes:
+      - ./uploads:/app/uploads
+      - ./src:/app/src
+      - ./client/src:/app/client/src
+    command: npm run dev
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=scorecheck
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

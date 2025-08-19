@@ -5,18 +5,21 @@ export interface AuthenticatedRequest extends Request {
   user?: JwtPayload;
 }
 
-export const requireAdmin = (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+export const requireAdmin = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
   try {
     if (!req.user) {
-      return res.status(401).json({ success: false, error: 'Authentication required' });
+      res.status(401).json({ success: false, error: 'Authentication required' });
+      return;
     }
 
     if (req.user.role !== 'ADMIN') {
-      return res.status(403).json({ success: false, error: 'Admin access required' });
+      res.status(403).json({ success: false, error: 'Admin access required' });
+      return;
     }
 
     next();
   } catch (error) {
-    return res.status(500).json({ success: false, error: 'Internal server error' });
+    res.status(500).json({ success: false, error: 'Internal server error' });
+    return;
   }
 };

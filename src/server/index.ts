@@ -12,6 +12,7 @@ import authRoutes from '@/routes/auth';
 import screenshotRoutes from '@/routes/screenshots';
 import analyticsRoutes from '@/routes/analytics';
 import adminRoutes from '@/routes/admin';
+import healthRoutes from '@/routes/health';
 
 // Load environment variables
 dotenv.config();
@@ -30,6 +31,15 @@ app.use(helmet({
     },
   },
 }));
+
+// Disable caching globally for API responses
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.setHeader('Surrogate-Control', 'no-store');
+  next();
+});
 
 // CORS configuration
 app.use(cors({
@@ -61,7 +71,17 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Static file serving
-app.use('/uploads', express.static(path.join(__dirname, '../../uploads')));
+app.use('/uploads', express.static(path.join(__dirname, '../../uploads'), {
+  etag: false,
+  lastModified: false,
+  maxAge: 0,
+  setHeaders: (res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+  },
+}));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -78,6 +98,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/screenshots', screenshotRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/health', healthRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -151,3 +172,4 @@ process.on('SIGINT', () => {
 });
 
 export default app;
+

@@ -1,25 +1,45 @@
-import { VisionApiResponse, BoxScoreData, PlayerData, TeamData } from '@/types';
+import { BoxScoreData, PlayerData, TeamData, TeamQuarterTotals, ExtractedRow } from '@/types';
 
 export class BoxScoreParser {
-  private textBlocks: VisionApiResponse[] = [];
+  private extractedRows: ExtractedRow[];
+  private filename: string;
+  private teamAQuarters: TeamQuarterTotals | undefined;
+  private teamBQuarters: TeamQuarterTotals | undefined;
 
-  constructor(textBlocks: VisionApiResponse[]) {
-    this.textBlocks = textBlocks;
+  constructor(extractedRows: ExtractedRow[], filename: string, teamAQuarters?: TeamQuarterTotals, teamBQuarters?: TeamQuarterTotals) {
+    this.extractedRows = extractedRows;
+    this.filename = filename;
+    this.teamAQuarters = teamAQuarters;
+    this.teamBQuarters = teamBQuarters;
   }
 
   parse(): BoxScoreData {
-    const fullText = this.textBlocks.map(block => block.text).join(' ');
+    // Extract team names and scores from the first few rows
+    const teamInfo = this.extractTeamInfo();
     
-    // Extract team names and scores
-    const teamInfo = this.extractTeamInfo(fullText);
+    console.log('🔍 BoxScoreParser: Starting parse with team info:', teamInfo);
+    console.log('🔍 BoxScoreParser: Extracted rows count:', this.extractedRows.length);
+    console.log('🔍 BoxScoreParser: Sample rows:', this.extractedRows.slice(0, 3).map(row => ({
+      name: row.playerName,
+      team: row.team,
+      points: row.points
+    })));
     
-    // Extract player statistics
-    const players = this.extractPlayerStats(fullText);
+    // Convert extracted rows to player data with team assignments
+    const players = this.convertRowsToPlayerData(teamInfo);
+    
+    console.log('🔍 BoxScoreParser: Converted players count:', players.length);
+    console.log('🔍 BoxScoreParser: Final team breakdown:');
+    const homeTeamPlayers = players.filter(p => p.team === teamInfo.homeTeam);
+    const awayTeamPlayers = players.filter(p => p.team === teamInfo.awayTeam);
+    console.log(`   ${teamInfo.homeTeam}: ${homeTeamPlayers.length} players`);
+    console.log(`   ${teamInfo.awayTeam}: ${awayTeamPlayers.length} players`);
     
     // Extract team statistics
-    const teams = this.extractTeamStats(fullText, teamInfo);
-
-    return {
+    const teams = this.extractTeamStats(teamInfo, players);
+    
+    // Create the final box score data
+    const result: BoxScoreData = {
       homeTeam: teamInfo.homeTeam,
       awayTeam: teamInfo.awayTeam,
       homeScore: teamInfo.homeScore,
@@ -27,131 +47,150 @@ export class BoxScoreParser {
       players,
       teams,
     };
-  }
 
-  private extractTeamInfo(text: string): { homeTeam: string; awayTeam: string; homeScore: number; awayScore: number } {
-    // Common NBA team patterns
-    const teamPatterns = [
-      'Lakers', 'Celtics', 'Warriors', 'Bulls', 'Heat', 'Knicks', 'Nets', 'Clippers',
-      'Suns', 'Bucks', 'Nuggets', '76ers', 'Trail Blazers', 'Jazz', 'Rockets',
-      'Mavericks', 'Spurs', 'Thunder', 'Pelicans', 'Grizzlies', 'Timberwolves',
-      'Kings', 'Hornets', 'Magic', 'Pistons', 'Cavaliers', 'Pacers', 'Hawks',
-      'Wizards', 'Raptors', 'Knicks'
-    ];
-
-    let homeTeam = '';
-    let awayTeam = '';
-    let homeScore = 0;
-    let awayScore = 0;
-
-    // Look for score patterns (e.g., "Lakers 108 - 95 Celtics")
-    const scorePattern = /(\w+)\s+(\d+)\s*[-–]\s*(\d+)\s+(\w+)/i;
-    const match = text.match(scorePattern);
-    
-    if (match) {
-      const [, team1, score1, score2, team2] = match;
-      const score1Num = parseInt(score1 || '0');
-      const score2Num = parseInt(score2 || '0');
-      
-      // Determine which team is home/away based on score order or context
-      if (score1Num > score2Num) {
-        homeTeam = team1 || 'Unknown Team';
-        awayTeam = team2 || 'Unknown Team';
-        homeScore = score1Num;
-        awayScore = score2Num;
-      } else {
-        homeTeam = team2 || 'Unknown Team';
-        awayTeam = team1 || 'Unknown Team';
-        homeScore = score2Num;
-        awayScore = score1Num;
-      }
-    } else {
-      // Fallback: look for team names in the text
-      for (const team of teamPatterns) {
-        if (text.includes(team)) {
-          if (!homeTeam) {
-            homeTeam = team;
-          } else if (!awayTeam) {
-            awayTeam = team;
-            break;
-          }
-        }
-      }
+    // Only add quarter totals if they exist
+    if (this.teamAQuarters) {
+      result.teamAQuarters = this.teamAQuarters;
+    }
+    if (this.teamBQuarters) {
+      result.teamBQuarters = this.teamBQuarters;
     }
 
+    return result;
+  }
+
+  private extractTeamInfo(): { homeTeam: string; awayTeam: string; homeScore: number; awayScore: number } {
+    // Use the actual team assignments from the OCR service
+    // The OCR service already correctly assigns players to Team A (P6-P10) and Team B (P1-P5)
+    // We should preserve these assignments and just map them to home/away for display purposes
+    
+    console.log('🔍 Extracting team info from OCR data...');
+    
+    // Count how many players are assigned to each team
+    const teamACount = this.extractedRows.filter(row => row.team === 'Team A').length;
+    const teamBCount = this.extractedRows.filter(row => row.team === 'Team B').length;
+    
+    console.log(`🔍 Team assignments from OCR: Team A (${teamACount} players), Team B (${teamBCount} players)`);
+    
+    // For display purposes, we'll map:
+    // Team A (P1-P5, usually the top section) → Home Team
+    // Team B (P6-P10, usually the bottom section) → Away Team
+    // This matches the typical box score layout where home team is shown first
+    
+    const homeTeam = 'Team A';
+    const awayTeam = 'Team B';
+    const homeScore = 0; // Will be calculated from player stats
+    const awayScore = 0; // Will be calculated from player stats
+    
+    console.log(`🎯 Team mapping: ${homeTeam} (Home) vs ${awayTeam} (Away)`);
+    
     return { homeTeam, awayTeam, homeScore, awayScore };
   }
 
-  private extractPlayerStats(text: string): PlayerData[] {
-    const players: PlayerData[] = [];
+
+
+  private convertRowsToPlayerData(teamInfo: { homeTeam: string; awayTeam: string }): PlayerData[] {
+    // First, create the player data without team assignment
+    const playerDataWithoutTeams = this.extractedRows.map((row, index) => {
+      const gameIdFromFile = this.extractGameIdFromFilename();
+      const position = this.convertIndexToPosition(index + 1);
+      
+      // ✅ Preserve the original ID from OCR service, or generate a fallback
+      const playerId = row.id || `${gameIdFromFile}-${index + 1}`;
+      
+      return {
+        id: row.id || undefined, // ✅ Preserve the original ID (can be undefined)
+        name: row.playerName,
+        team: row.team, // ✅ Preserve the original team assignment from OCR
+        teammateGrade: row.teammateGrade,
+        gameIdFromFile,
+        playerId,
+        position,
+        points: row.points,
+        rebounds: row.rebounds,
+        assists: row.assists,
+        steals: row.steals,
+        blocks: row.blocks,
+        turnovers: row.turnovers,
+        fouls: row.fouls,
+        fgMade: row.fgMade,
+        fgAttempted: row.fgAttempted,
+        fgPercentage: row.fgAttempted > 0 ? (row.fgMade / row.fgAttempted) * 100 : 0,
+        threeMade: row.threeMade,
+        threeAttempted: row.threeAttempted,
+        threePercentage: row.threeAttempted > 0 ? (row.threeMade / row.threeAttempted) * 100 : 0,
+        ftMade: row.ftMade,
+        ftAttempted: row.ftAttempted,
+        ftPercentage: row.ftAttempted > 0 ? (row.ftMade / row.ftAttempted) * 100 : 0,
+      };
+    });
+
+    // Now distribute players to teams naturally
+    return this.distributePlayersToTeams(playerDataWithoutTeams, teamInfo);
+  }
+
+  private distributePlayersToTeams(players: PlayerData[], teamInfo: { homeTeam: string; awayTeam: string }): PlayerData[] {
+    if (players.length === 0) return players;
     
-    // Split text into lines and look for player statistics
-    const lines = text.split('\n').filter(line => line.trim().length > 0);
+    // IMPORTANT: Preserve the original team assignments from the OCR service
+    // The OCR service already correctly assigns players to Team A (P1-P5) and Team B (P6-P10)
+    // We should NOT randomly redistribute them as this breaks the correct team grouping
     
-    for (const line of lines) {
-      const playerData = this.parsePlayerLine(line);
-      if (playerData) {
-        players.push(playerData);
+    console.log('🔍 Preserving original team assignments from OCR service...');
+    console.log('🔍 Players with original teams:', players.map(p => ({ name: p.name, team: p.team })));
+    
+    // Map the original Team A/Team B assignments to the display team names
+    const updatedPlayers = players.map(player => {
+      if (player.team === 'Team A') {
+        return { ...player, team: teamInfo.homeTeam };
+      } else if (player.team === 'Team B') {
+        return { ...player, team: teamInfo.awayTeam };
+      } else {
+        // Fallback for any players without team assignment
+        console.warn(`⚠️ Player ${player.name} has no team assignment, defaulting to ${teamInfo.homeTeam}`);
+        return { ...player, team: teamInfo.homeTeam };
       }
-    }
-
-    return players;
-  }
-
-  private parsePlayerLine(line: string): PlayerData | null {
-    // Pattern for player statistics line
-    // Example: "LeBron James 25 8 10 2 1 3 2 10-18 55.6 2-5 40.0 3-4 75.0 +15"
-    const playerPattern = /^([A-Za-z\s]+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)-(\d+)\s+([\d.]+)\s+(\d+)-(\d+)\s+([\d.]+)\s+(\d+)-(\d+)\s+([\d.]+)\s+([+-]\d+)/;
+    });
     
-    const match = line.match(playerPattern);
-    if (!match) return null;
+    // Count players per team for logging
+    const homeTeamCount = updatedPlayers.filter(p => p.team === teamInfo.homeTeam).length;
+    const awayTeamCount = updatedPlayers.filter(p => p.team === teamInfo.awayTeam).length;
+    
+    console.log(`🎯 Preserved team assignments: ${teamInfo.homeTeam} (${homeTeamCount}), ${teamInfo.awayTeam} (${awayTeamCount})`);
+    console.log('🔍 Final team assignments:', updatedPlayers.map(p => ({ name: p.name, team: p.team })));
+    
+    return updatedPlayers;
+  }
 
-    const [
-      , name, points, rebounds, assists, steals, blocks, turnovers, fouls,
-      fgMade, fgAttempted, fgPercentage, threeMade, threeAttempted, threePercentage,
-      ftMade, ftAttempted, ftPercentage, plusMinus
-    ] = match;
 
-    // Determine team based on context (this is a simplified approach)
-    const team = this.determineTeamFromContext(name || 'Unknown Player');
 
-    return {
-      name: (name || 'Unknown Player').trim(),
-      team,
-      points: parseInt(points || '0'),
-      rebounds: parseInt(rebounds || '0'),
-      assists: parseInt(assists || '0'),
-      steals: parseInt(steals || '0'),
-      blocks: parseInt(blocks || '0'),
-      turnovers: parseInt(turnovers || '0'),
-      fouls: parseInt(fouls || '0'),
-      fgMade: parseInt(fgMade || '0'),
-      fgAttempted: parseInt(fgAttempted || '0'),
-      fgPercentage: parseFloat(fgPercentage || '0'),
-      threeMade: parseInt(threeMade || '0'),
-      threeAttempted: parseInt(threeAttempted || '0'),
-      threePercentage: parseFloat(threePercentage || '0'),
-      ftMade: parseInt(ftMade || '0'),
-      ftAttempted: parseInt(ftAttempted || '0'),
-      ftPercentage: parseFloat(ftPercentage || '0'),
-      plusMinus: parseInt(plusMinus || '0'),
+  private extractGameIdFromFilename(): string {
+    // Extract numbers from filename (e.g., "IMG_1754.jpg" -> "1754")
+    const match = this.filename.match(/(\d+)/);
+    return match && match[1] ? match[1] : '0000';
+  }
+
+  private convertIndexToPosition(index: number): string {
+    // Convert row index to basketball position
+    // P1-P5 (Team A): 1=PG, 2=SG, 3=SF, 4=PF, 5=C
+    // P6-P10 (Team B): 6=PG, 7=SG, 8=SF, 9=PF, 10=C
+    const positionMap: { [key: number]: string } = {
+      1: 'PG', 6: 'PG',
+      2: 'SG', 7: 'SG', 
+      3: 'SF', 8: 'SF',
+      4: 'PF', 9: 'PF',
+      5: 'C', 10: 'C'
     };
+    
+    return positionMap[index] || 'PG'; // Default to PG if not in map
   }
 
-  private determineTeamFromContext(playerName: string): string {
-    // This is a simplified approach - in a real implementation,
-    // you'd need more sophisticated logic based on the image layout
-    // For now, we'll return a default team
-    return 'Unknown Team';
-  }
-
-  private extractTeamStats(text: string, teamInfo: { homeTeam: string; awayTeam: string }): TeamData[] {
+  private extractTeamStats(teamInfo: { homeTeam: string; awayTeam: string }, players: PlayerData[]): TeamData[] {
     const teams: TeamData[] = [];
     
-    // Extract team totals from the text
-    // This is a simplified implementation - real parsing would be more complex
-    const homeTeamStats = this.parseTeamStats(text, teamInfo.homeTeam, true);
-    const awayTeamStats = this.parseTeamStats(text, teamInfo.awayTeam, false);
+    // Calculate team totals from player data
+    const homeTeamStats = this.calculateTeamStats(teamInfo.homeTeam, true, players);
+    const awayTeamStats = this.calculateTeamStats(teamInfo.awayTeam, false, players);
     
     if (homeTeamStats) teams.push(homeTeamStats);
     if (awayTeamStats) teams.push(awayTeamStats);
@@ -159,39 +198,50 @@ export class BoxScoreParser {
     return teams;
   }
 
-  private parseTeamStats(text: string, teamName: string, isHome: boolean): TeamData | null {
-    // Look for team totals in the text
-    // This is a simplified pattern - real implementation would be more sophisticated
-    const teamPattern = new RegExp(`${teamName}\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)-(\d+)\\s+([\\d.]+)\\s+(\\d+)-(\d+)\\s+([\\d.]+)\\s+(\\d+)-(\d+)\\s+([\\d.]+)`, 'i');
+  private calculateTeamStats(teamName: string, isHome: boolean, players: PlayerData[]): TeamData | null {
+    // Calculate team totals by summing up player statistics
+    const teamPlayers = players.filter(player => player.team === teamName);
     
-    const match = text.match(teamPattern);
-    if (!match) return null;
-
-    const [
-      , points, rebounds, assists, steals, blocks, turnovers, fouls,
-      fgMade, fgAttempted, fgPercentage, threeMade, threeAttempted, threePercentage,
-      ftMade, ftAttempted, ftPercentage
-    ] = match;
+    if (teamPlayers.length === 0) {
+      return null;
+    }
+    
+    const totals = teamPlayers.reduce((acc, player) => ({
+      points: acc.points + player.points,
+      rebounds: acc.rebounds + player.rebounds,
+      assists: acc.assists + player.assists,
+      steals: acc.steals + player.steals,
+      blocks: acc.blocks + player.blocks,
+      turnovers: acc.turnovers + player.turnovers,
+      fouls: acc.fouls + player.fouls,
+      fgMade: acc.fgMade + player.fgMade,
+      fgAttempted: acc.fgAttempted + player.fgAttempted,
+      threeMade: acc.threeMade + player.threeMade,
+      threeAttempted: acc.threeAttempted + player.threeAttempted,
+      ftMade: acc.ftMade + player.ftMade,
+      ftAttempted: acc.ftAttempted + player.ftAttempted,
+    }), {
+      points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0,
+      turnovers: 0, fouls: 0, fgMade: 0, fgAttempted: 0,
+      threeMade: 0, threeAttempted: 0, ftMade: 0, ftAttempted: 0
+    });
 
     return {
       name: teamName,
       isHome,
-      points: parseInt(points || '0'),
-      rebounds: parseInt(rebounds || '0'),
-      assists: parseInt(assists || '0'),
-      steals: parseInt(steals || '0'),
-      blocks: parseInt(blocks || '0'),
-      turnovers: parseInt(turnovers || '0'),
-      fouls: parseInt(fouls || '0'),
-      fgMade: parseInt(fgMade || '0'),
-      fgAttempted: parseInt(fgAttempted || '0'),
-      fgPercentage: parseFloat(fgPercentage || '0'),
-      threeMade: parseInt(threeMade || '0'),
-      threeAttempted: parseInt(threeAttempted || '0'),
-      threePercentage: parseFloat(threePercentage || '0'),
-      ftMade: parseInt(ftMade || '0'),
-      ftAttempted: parseInt(ftAttempted || '0'),
-      ftPercentage: parseFloat(ftPercentage || '0'),
+      points: totals.points,
+      rebounds: totals.rebounds,
+      assists: totals.assists,
+      steals: totals.steals,
+      blocks: totals.blocks,
+      turnovers: totals.turnovers,
+      fouls: totals.fouls,
+      fgMade: totals.fgMade,
+      fgAttempted: totals.fgAttempted,
+      threeMade: totals.threeMade,
+      threeAttempted: totals.threeAttempted,
+      ftMade: totals.ftMade,
+      ftAttempted: totals.ftAttempted,
     };
   }
 }

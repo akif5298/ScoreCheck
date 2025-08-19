@@ -144,8 +144,10 @@ const Analytics: React.FC = () => {
               <p className="text-2xl font-bold text-gray-900">{data?.teamStats?.length || 0}</p>
             </div>
             <div className="stat-card">
-              <h3 className="text-sm font-medium text-gray-600">Avg PPG</h3>
-              <p className="text-2xl font-bold text-gray-900">24.8</p>
+              <h3 className="text-sm font-medium text-gray-600">Avg Points for Team A</h3>
+              <p className="text-2xl font-bold text-gray-900">
+                {data?.teamStats?.find(team => team.name === 'Team A')?.avgPoints || 0}
+              </p>
             </div>
           </div>
 

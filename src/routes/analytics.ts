@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { prisma } from '@/services/database';
+import supabaseService from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
 import { ApiResponse, AnalyticsData, PlayerStats } from '@/types';
 
@@ -16,13 +16,8 @@ router.get('/players', authenticateToken, async (req: Request, res: Response) =>
       return res.status(401).json(response);
     }
 
-    const players = await prisma.player.findMany({
-      where: { userId: req.user.userId },
-      include: {
-        game: true,
-      },
-      orderBy: { points: 'desc' },
-    });
+    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const players = games.flatMap(game => game.players || []);
 
     // Calculate aggregated statistics
     const playerStats = await calculatePlayerStats(req.user.userId);
@@ -59,13 +54,16 @@ router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
       return res.status(401).json(response);
     }
 
-    const teams = await prisma.team.findMany({
-      where: { userId: req.user.userId },
-      include: {
-        game: true,
-      },
-      orderBy: { points: 'desc' },
-    });
+    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const teams = games.map(game => ({
+      name: game.homeTeam,
+      points: game.homeScore,
+      game: game
+    })).concat(games.map(game => ({
+      name: game.awayTeam,
+      points: game.awayScore,
+      game: game
+    })));
 
     // Calculate team statistics
     const teamStats = await calculateTeamStats(req.user.userId);
@@ -103,11 +101,8 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     }
 
     // Get recent games
-    const recentGames = await prisma.game.findMany({
-      where: { userId: req.user.userId },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
+    const allGames = await supabaseService.getGamesByUserId(req.user.userId);
+    const recentGames = allGames.slice(0, 10);
 
     // Get player statistics
     const playerStats = await calculatePlayerStats(req.user.userId);
@@ -145,14 +140,18 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
 
 // Helper function to calculate player statistics
 async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
-  const players = await prisma.player.findMany({
-    where: { userId },
-    include: { game: true },
-  });
+  const games = await supabaseService.getGamesByUserId(userId);
+  const players = games.flatMap(game => game.players || []);
 
   const playerMap = new Map<string, PlayerStats>();
 
   for (const player of players) {
+    // Skip players with null/undefined names or teams
+    if (!player.name || !player.team) {
+      console.warn('Skipping player with missing name or team:', player);
+      continue;
+    }
+    
     const key = `${player.name}-${player.team}`;
     
     if (!playerMap.has(key)) {
@@ -194,6 +193,11 @@ async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
     stats.totalBlocks += player.blocks;
     stats.totalTurnovers += player.turnovers;
     stats.totalFouls += player.fouls;
+    
+    // Add shooting stats if available
+    if (player.fgMade !== undefined && player.fgAttempted !== undefined) {
+      // These will be calculated as averages later
+    }
   }
 
   // Calculate averages
@@ -214,51 +218,51 @@ async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
 
 // Helper function to calculate team statistics
 async function calculateTeamStats(userId: string): Promise<any[]> {
-  const teams = await prisma.team.findMany({
-    where: { userId },
-    include: { game: true },
-  });
-
+  const games = await supabaseService.getGamesByUserId(userId);
+  
   const teamMap = new Map<string, any>();
 
-  for (const team of teams) {
-    if (!teamMap.has(team.name)) {
-      teamMap.set(team.name, {
-        name: team.name,
+  for (const game of games) {
+    // Process home team
+    if (!teamMap.has(game.homeTeam)) {
+      teamMap.set(game.homeTeam, {
+        name: game.homeTeam,
         gamesPlayed: 0,
         wins: 0,
         losses: 0,
         totalPoints: 0,
-        totalRebounds: 0,
-        totalAssists: 0,
         avgPoints: 0,
-        avgRebounds: 0,
-        avgAssists: 0,
       });
     }
 
-    const stats = teamMap.get(team.name)!;
-    stats.gamesPlayed++;
-    stats.totalPoints += team.points;
-    stats.totalRebounds += team.rebounds;
-    stats.totalAssists += team.assists;
+    const homeStats = teamMap.get(game.homeTeam)!;
+    homeStats.gamesPlayed++;
+    homeStats.totalPoints += game.homeScore;
+    if (game.homeScore > game.awayScore) {
+      homeStats.wins++;
+    } else {
+      homeStats.losses++;
+    }
 
-    // Determine win/loss
-    const game = team.game;
-    if (game) {
-      if (team.isHome) {
-        if (game.homeScore > game.awayScore) {
-          stats.wins++;
-        } else {
-          stats.losses++;
-        }
-      } else {
-        if (game.awayScore > game.homeScore) {
-          stats.wins++;
-        } else {
-          stats.losses++;
-        }
-      }
+    // Process away team
+    if (!teamMap.has(game.awayTeam)) {
+      teamMap.set(game.awayTeam, {
+        name: game.awayTeam,
+        gamesPlayed: 0,
+        wins: 0,
+        losses: 0,
+        totalPoints: 0,
+        avgPoints: 0,
+      });
+    }
+
+    const awayStats = teamMap.get(game.awayTeam)!;
+    awayStats.gamesPlayed++;
+    awayStats.totalPoints += game.awayScore;
+    if (game.awayScore > game.homeScore) {
+      awayStats.wins++;
+    } else {
+      awayStats.losses++;
     }
   }
 
@@ -266,8 +270,6 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
   for (const stats of teamMap.values()) {
     if (stats.gamesPlayed > 0) {
       stats.avgPoints = stats.totalPoints / stats.gamesPlayed;
-      stats.avgRebounds = stats.totalRebounds / stats.gamesPlayed;
-      stats.avgAssists = stats.totalAssists / stats.gamesPlayed;
     }
   }
 

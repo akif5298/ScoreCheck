@@ -67,7 +67,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
+    if (!window.confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
       return;
     }
 
@@ -93,7 +93,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteGame = async (gameId: string) => {
-    if (!confirm('Are you sure you want to delete this game? This action cannot be undone.')) {
+    if (!window.confirm('Are you sure you want to delete this game? This action cannot be undone.')) {
       return;
     }
 

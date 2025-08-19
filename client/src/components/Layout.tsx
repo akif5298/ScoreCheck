@@ -1,15 +1,15 @@
 import React from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { 
-  HomeIcon, 
-  UploadIcon, 
-  ChartBarIcon, 
+import {
+  HomeIcon,
+  ArrowUpTrayIcon,
+  ChartBarIcon,
   CalendarIcon,
   UserIcon,
-  LogoutIcon,
-  CogIcon
-} from '@heroicons/react/outline';
+  ArrowRightOnRectangleIcon,
+  Cog6ToothIcon
+} from '@heroicons/react/24/outline';
 
 const Layout: React.FC = () => {
   const { user, logout } = useAuth();
@@ -17,11 +17,11 @@ const Layout: React.FC = () => {
 
   const navigation = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
-    { name: 'Upload', href: '/upload', icon: UploadIcon },
+    { name: 'Upload', href: '/upload', icon: ArrowUpTrayIcon },
     { name: 'Analytics', href: '/analytics', icon: ChartBarIcon },
     { name: 'Games', href: '/games', icon: CalendarIcon },
     // Admin navigation item - only show for admin users
-    ...(user?.role === 'ADMIN' ? [{ name: 'Admin', href: '/admin', icon: CogIcon }] : []),
+    ...(user?.role === 'ADMIN' ? [{ name: 'Admin', href: '/admin', icon: Cog6ToothIcon }] : []),
   ];
 
   const isActive = (path: string) => location.pathname === path;
@@ -81,7 +81,7 @@ const Layout: React.FC = () => {
               onClick={logout}
               className="flex items-center w-full px-3 py-2 text-sm font-medium text-gray-600 rounded-lg hover:bg-gray-100 hover:text-gray-900 transition-colors duration-200"
             >
-              <LogoutIcon className="w-4 h-4 mr-3" />
+              <ArrowRightOnRectangleIcon className="w-4 h-4 mr-3" />
               Logout
             </button>
           </div>

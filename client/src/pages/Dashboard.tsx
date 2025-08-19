@@ -3,13 +3,13 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 import toast from 'react-hot-toast';
 import { 
-  UploadIcon, 
+  ArrowUpTrayIcon, 
   ChartBarIcon, 
   CalendarIcon,
-  TrendingUpIcon,
+  ArrowTrendingUpIcon,
   UsersIcon,
   TrophyIcon 
-} from '@heroicons/react/outline';
+} from '@heroicons/react/24/outline';
 
 interface DashboardStats {
   totalGames: number;
@@ -21,6 +21,12 @@ interface DashboardStats {
     rebounds: any[];
     assists: any[];
   };
+  teamStats: {
+    name: string;
+    avgPoints: number;
+    avgRebounds: number;
+    avgAssists: number;
+  }[];
 }
 
 const Dashboard: React.FC = () => {
@@ -64,6 +70,11 @@ const Dashboard: React.FC = () => {
             { playerName: 'LeBron James', avgAssists: 8.7, team: 'Lakers' },
           ],
         },
+        teamStats: [
+          { name: 'Team A', avgPoints: 105.2, avgRebounds: 42.1, avgAssists: 24.5 },
+          { name: 'Team B', avgPoints: 98.7, avgRebounds: 40.3, avgAssists: 22.8 },
+          { name: 'Team C', avgPoints: 110.1, avgRebounds: 45.2, avgAssists: 26.7 },
+        ],
       });
     } finally {
       setLoading(false);
@@ -127,11 +138,13 @@ const Dashboard: React.FC = () => {
         <div className="stat-card">
           <div className="flex items-center">
             <div className="p-2 bg-purple-100 rounded-lg">
-              <TrendingUpIcon className="w-6 h-6 text-purple-600" />
+              <ArrowTrendingUpIcon className="w-6 h-6 text-purple-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Avg PPG</p>
-              <p className="text-2xl font-bold text-gray-900">24.8</p>
+              <p className="text-sm font-medium text-gray-600">Avg Points for Team A</p>
+              <p className="text-2xl font-bold text-gray-900">
+                {stats?.teamStats?.find(team => team.name === 'Team A')?.avgPoints || 0}
+              </p>
             </div>
           </div>
         </div>
@@ -145,7 +158,7 @@ const Dashboard: React.FC = () => {
         >
           <div className="flex items-center">
             <div className="p-3 bg-primary-100 rounded-lg group-hover:bg-primary-200 transition-colors duration-200">
-              <UploadIcon className="w-6 h-6 text-primary-600" />
+              <ArrowUpTrayIcon className="w-6 h-6 text-primary-600" />
             </div>
             <div className="ml-4">
               <h3 className="text-lg font-semibold text-gray-900">Upload Screenshot</h3>

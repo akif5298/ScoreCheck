@@ -90,13 +90,39 @@ interface ProcessedGame {
   imageUrl: string;
   fileName: string;
   hasPlayerAssignment: boolean;
+  processedAt?: string;
+}
+
+interface ProcessingFile {
+  file: File;
+  fileName: string;
+  status: 'processing' | 'ready' | 'reviewing' | 'completed' | 'error';
+  processedGame?: ProcessedGame;
+  error?: string;
+}
+
+interface MultipleUploadState {
+  files: ProcessingFile[];
+  currentlyReviewing: number | null;
+  isUploading: boolean;
+  processingComplete: boolean;
 }
 
 const Upload: React.FC = () => {
+  // Legacy single upload state (keep for backward compatibility)
   const [processedGame, setProcessedGame] = useState<ProcessedGame | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPlayerAssignment, setShowPlayerAssignment] = useState(false);
+  
+  // New multiple upload state
+  const [multipleUploadState, setMultipleUploadState] = useState<MultipleUploadState>({
+    files: [],
+    currentlyReviewing: null,
+    isUploading: false,
+    processingComplete: false
+  });
+  const [isMultipleMode, setIsMultipleMode] = useState(false);
 
   // Debug: Monitor processedGame state changes
   useEffect(() => {
@@ -116,12 +142,108 @@ const Upload: React.FC = () => {
     }
   }, [processedGame]);
 
+  // Multiple file upload handler
+  const handleMultipleUpload = useCallback(async (acceptedFiles: File[]) => {
+    if (acceptedFiles.length === 0) return;
+
+    console.log(`🚀 Starting multiple upload with ${acceptedFiles.length} files`);
+    
+    // Initialize state
+    const initialFiles: ProcessingFile[] = acceptedFiles.map(file => ({
+      file,
+      fileName: file.name,
+      status: 'processing'
+    }));
+
+    setMultipleUploadState({
+      files: initialFiles,
+      currentlyReviewing: null,
+      isUploading: true,
+      processingComplete: false
+    });
+    setIsMultipleMode(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      acceptedFiles.forEach(file => {
+        formData.append('screenshots', file);
+      });
+
+      const response = await fetch('/api/screenshots/upload-multiple', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('🎉 Multiple upload completed:', result.data);
+        console.log('🔍 Raw results:', result.data.results);
+        console.log('🔍 First result imageUrl:', result.data.results[0]?.originalImageUrl);
+
+        // Convert results to processed games and update state
+        const processedFiles: ProcessingFile[] = result.data.results.map((processedResult: any, index: number) => {
+          console.log(`🔍 Processing result ${index}:`, processedResult);
+          console.log(`🔍 Image URL from backend:`, processedResult.originalImageUrl);
+          
+          return {
+            file: acceptedFiles[index],
+            fileName: acceptedFiles[index].name,
+            status: 'ready' as const,
+            processedGame: {
+              extractedData: processedResult.extractedData,
+              imageUrl: processedResult.originalImageUrl,
+              fileName: processedResult.fileName,
+              hasPlayerAssignment: false,
+              processedAt: processedResult.processedAt
+            }
+          };
+        });
+
+        setMultipleUploadState(prev => ({
+          ...prev,
+          files: processedFiles,
+          isUploading: false,
+          processingComplete: true,
+          currentlyReviewing: 0 // Start with first file
+        }));
+
+        // Set the first file for review
+        if (processedFiles.length > 0 && processedFiles[0].processedGame) {
+          console.log('🔍 Setting first file for review:', processedFiles[0].processedGame);
+          console.log('🔍 Image URL:', processedFiles[0].processedGame.imageUrl);
+          setProcessedGame(processedFiles[0].processedGame);
+          setShowPlayerAssignment(true);
+        }
+      } else {
+        const errorData = await response.json();
+        setError(errorData.error || 'Failed to process images');
+        setMultipleUploadState(prev => ({ ...prev, isUploading: false }));
+      }
+    } catch (error) {
+      console.error('Multiple upload error:', error);
+      setError('Failed to upload images');
+      setMultipleUploadState(prev => ({ ...prev, isUploading: false }));
+    }
+  }, []);
+
+  // Single file upload handler (legacy)
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
 
-    const file = acceptedFiles[0]; // Only process first file
+    // Check if multiple files - use multiple upload flow
+    if (acceptedFiles.length > 1) {
+      return handleMultipleUpload(acceptedFiles);
+    }
+
+    // Single file upload (existing logic)
+    const file = acceptedFiles[0];
     setIsProcessing(true);
     setError(null);
+    setIsMultipleMode(false);
 
     try {
       const formData = new FormData();
@@ -144,7 +266,7 @@ const Upload: React.FC = () => {
           imageUrl = result.data.originalImageUrl;
         } else {
           // Fallback: create a data URL from the original file
-      const reader = new FileReader();
+          const reader = new FileReader();
           const filePromise = new Promise<string>((resolve) => {
             reader.onload = () => resolve(reader.result as string);
           });
@@ -152,11 +274,6 @@ const Upload: React.FC = () => {
           imageUrl = await filePromise;
         }
 
-        // Debug: Log what we received from the backend
-        console.log('🔍 Backend response received:', result.data);
-        console.log('🔍 Players received from backend:', result.data.extractedData.players);
-        console.log('🔍 Player count received:', result.data.extractedData.players.length);
-        
         const game: ProcessedGame = {
           extractedData: result.data.extractedData,
           imageUrl: imageUrl,
@@ -165,7 +282,7 @@ const Upload: React.FC = () => {
         };
 
         setProcessedGame(game);
-        setShowPlayerAssignment(true); // Show player assignment first
+        setShowPlayerAssignment(true);
       } else {
         const errorData = await response.json();
         setError(errorData.error || 'Failed to process image');
@@ -176,14 +293,14 @@ const Upload: React.FC = () => {
     } finally {
       setIsProcessing(false);
     }
-  }, []);
+  }, [handleMultipleUpload]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
       'image/*': ['.jpeg', '.jpg', '.png', '.gif']
     },
-    multiple: false
+    multiple: true // Enable multiple file selection
   });
 
   const handlePlayerAssignmentComplete = (updatedPlayers: PlayerNameAssignmentPlayerStats[]) => {
@@ -247,9 +364,6 @@ const Upload: React.FC = () => {
 
   const handleSaveGame = async () => {
     try {
-      // Get the current data from ReviewStats component
-      // We'll need to access this through a ref or state management
-      // For now, we'll use the processedGame data
       const gameData = {
         homeTeam: processedGame?.extractedData.homeTeam || 'Team A',
         awayTeam: processedGame?.extractedData.awayTeam || 'Team B',
@@ -269,15 +383,20 @@ const Upload: React.FC = () => {
         body: JSON.stringify({
           gameData,
           playersData,
-          originalImageBuffer: processedGame?.imageUrl,
+          imageUrl: processedGame?.imageUrl,
         }),
       });
 
       if (response.ok) {
-        // Reset and show success
-        setProcessedGame(null);
-        setShowPlayerAssignment(false);
-        alert('Game saved successfully!');
+        if (isMultipleMode) {
+          // Handle continuous flow for multiple files
+          handleNextFileInQueue();
+        } else {
+          // Single file mode - reset completely
+          setProcessedGame(null);
+          setShowPlayerAssignment(false);
+          alert('Game saved successfully!');
+        }
       } else {
         const errorData = await response.json();
         alert(`Failed to save game: ${errorData.error}`);
@@ -285,6 +404,63 @@ const Upload: React.FC = () => {
     } catch (error) {
       console.error('Save error:', error);
       alert('Failed to save game');
+    }
+  };
+
+  // Handle moving to next file in the queue (continuous flow)
+  const handleNextFileInQueue = () => {
+    const currentIndex = multipleUploadState.currentlyReviewing;
+    if (currentIndex === null) return;
+
+    // Mark current file as completed
+    setMultipleUploadState(prev => ({
+      ...prev,
+      files: prev.files.map((file, index) => 
+        index === currentIndex 
+          ? { ...file, status: 'completed' as const }
+          : file
+      )
+    }));
+
+    // Find next file to review
+    const nextIndex = multipleUploadState.files.findIndex((file, index) => 
+      index > currentIndex && file.status === 'ready'
+    );
+
+    if (nextIndex !== -1) {
+      // Move to next file
+      const nextFile = multipleUploadState.files[nextIndex];
+      if (nextFile.processedGame) {
+        setMultipleUploadState(prev => ({
+          ...prev,
+          currentlyReviewing: nextIndex,
+          files: prev.files.map((file, index) => 
+            index === nextIndex 
+              ? { ...file, status: 'reviewing' as const }
+              : file
+          )
+        }));
+
+        setProcessedGame(nextFile.processedGame);
+        setShowPlayerAssignment(true);
+        
+        console.log(`🎯 Moving to next file: ${nextFile.fileName} (${nextIndex + 1}/${multipleUploadState.files.length})`);
+      }
+    } else {
+      // All files completed
+      console.log('🎉 All files completed!');
+      alert(`All ${multipleUploadState.files.length} games saved successfully!`);
+      
+      // Reset everything
+      setProcessedGame(null);
+      setShowPlayerAssignment(false);
+      setMultipleUploadState({
+        files: [],
+        currentlyReviewing: null,
+        isUploading: false,
+        processingComplete: false
+      });
+      setIsMultipleMode(false);
     }
   };
 
@@ -340,17 +516,102 @@ const Upload: React.FC = () => {
     );
   }
 
+  // Render queue progress UI for multiple files
+  const renderQueueProgress = () => {
+    if (!isMultipleMode || multipleUploadState.files.length === 0) return null;
+
+    const completedCount = multipleUploadState.files.filter(f => f.status === 'completed').length;
+    const totalCount = multipleUploadState.files.length;
+    const currentFile = multipleUploadState.currentlyReviewing !== null 
+      ? multipleUploadState.files[multipleUploadState.currentlyReviewing]
+      : null;
+
+    return (
+      <div className="mb-8 bg-white rounded-lg shadow-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-gray-900">
+            Processing Queue ({completedCount}/{totalCount} completed)
+          </h2>
+          <div className="text-sm text-gray-500">
+            {currentFile ? `Currently reviewing: ${currentFile.fileName}` : 'Ready to review'}
+          </div>
+        </div>
+        
+        {/* Progress bar */}
+        <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+          <div 
+            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${(completedCount / totalCount) * 100}%` }}
+          ></div>
+        </div>
+
+        {/* File status list */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          {multipleUploadState.files.map((file, index) => (
+            <div 
+              key={index}
+              className={`p-3 rounded-lg border-2 transition-all ${
+                file.status === 'completed' 
+                  ? 'border-green-200 bg-green-50' 
+                  : file.status === 'reviewing'
+                  ? 'border-blue-200 bg-blue-50'
+                  : file.status === 'ready'
+                  ? 'border-yellow-200 bg-yellow-50'
+                  : file.status === 'processing'
+                  ? 'border-gray-200 bg-gray-50'
+                  : 'border-red-200 bg-red-50'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-900 truncate">
+                  {file.fileName}
+                </span>
+                <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                  file.status === 'completed' 
+                    ? 'bg-green-100 text-green-800'
+                    : file.status === 'reviewing'
+                    ? 'bg-blue-100 text-blue-800'
+                    : file.status === 'ready'
+                    ? 'bg-yellow-100 text-yellow-800'
+                    : file.status === 'processing'
+                    ? 'bg-gray-100 text-gray-800'
+                    : 'bg-red-100 text-red-800'
+                }`}>
+                  {file.status === 'reviewing' ? 'Current' : 
+                   file.status === 'ready' ? 'Ready' :
+                   file.status === 'completed' ? 'Done' :
+                   file.status === 'processing' ? 'Processing' : 'Error'}
+                </span>
+              </div>
+              {file.status === 'processing' && (
+                <div className="mt-2">
+                  <div className="animate-pulse h-1 bg-gray-300 rounded"></div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="text-center">
           <h1 className="text-3xl font-bold text-gray-900 mb-8">
-            Upload Box Score Screenshot
+            Upload Box Score Screenshot{isMultipleMode ? 's' : ''}
           </h1>
           <p className="text-lg text-gray-600 mb-8">
-            Upload a screenshot of a box score to extract and review the game data
+            {isMultipleMode 
+              ? 'Processing multiple screenshots - review each game as they complete'
+              : 'Upload a screenshot of a box score to extract and review the game data'
+            }
           </p>
-      </div>
+        </div>
+
+        {/* Queue Progress UI */}
+        {renderQueueProgress()}
 
                  <div className="bg-white rounded-lg shadow-lg p-8">
           <div
@@ -364,20 +625,28 @@ const Upload: React.FC = () => {
             <input {...getInputProps()} />
              <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400 mb-4" />
              
-             {isProcessing ? (
+             {isProcessing || multipleUploadState.isUploading ? (
                <div className="space-y-4">
                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                 <p className="text-gray-600">Processing image...</p>
+                 <p className="text-gray-600">
+                   {multipleUploadState.isUploading 
+                     ? `Processing ${multipleUploadState.files.length} files...`
+                     : 'Processing image...'
+                   }
+                 </p>
                </div>
               ) : (
                 <div>
                  <p className="text-lg text-gray-600 mb-4">
                    {isDragActive
-                     ? 'Drop the file here...'
-                     : 'Drag and drop your screenshot here, or click to browse'}
+                     ? 'Drop the files here...'
+                     : 'Drag and drop your screenshots here, or click to browse'}
                  </p>
                  <p className="text-sm text-gray-500 mb-4">
-                   Supported formats: JPEG, PNG, GIF (Max 10MB)
+                   Supported formats: JPEG, PNG, GIF (Max 10MB each)<br/>
+                   <span className="font-medium text-blue-600">
+                     Select multiple files for continuous processing!
+                   </span>
                   </p>
                 </div>
               )}

@@ -53,11 +53,26 @@ export class SupabaseService {
 
       console.log('Supabase upload successful:', data);
       
-      const { data: { publicUrl } } = supabaseServiceRole.storage
+      // For private buckets, we need to generate a signed URL
+      // This creates a temporary URL that expires after 1 hour
+      const { data: signedUrlData, error: signedUrlError } = await supabaseServiceRole.storage
         .from(bucket)
-        .getPublicUrl(fileName);
+        .createSignedUrl(fileName, 3600); // 1 hour expiry
 
-      return publicUrl;
+      if (signedUrlError) {
+        console.error('Failed to generate signed URL:', signedUrlError);
+        // Fallback: try to construct the URL manually
+        const projectRef = process.env.SUPABASE_URL?.split('//')[1]?.split('.')[0];
+        const fallbackUrl = `https://${projectRef}.supabase.co/storage/v1/object/sign/${bucket}/${fileName}`;
+        console.log('🔍 Using fallback URL:', fallbackUrl);
+        return fallbackUrl;
+      }
+
+      console.log('🔍 Generated signed URL:', signedUrlData.signedUrl);
+      console.log('🔍 Bucket:', bucket);
+      console.log('🔍 File name:', fileName);
+      
+      return signedUrlData.signedUrl;
     } catch (error) {
       console.error('Supabase storage upload failed:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -224,9 +239,9 @@ export class SupabaseService {
         INSERT INTO teams (
           id, "gameId", name, "isHome", points, rebounds, assists, steals, blocks,
           turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
-          "ftMade", "ftAttempted", "createdAt", "updatedAt", "userId"
+          "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage", "createdAt", "updatedAt", "userId"
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW(), NOW(), $18)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), NOW(), $21)
         RETURNING *
       `;
       const values = [
@@ -247,10 +262,16 @@ export class SupabaseService {
         teamData.threeAttempted || 0,
         teamData.ftMade || 0,
         teamData.ftAttempted || 0,
+        teamData.fg_percentage || 0.00,
+        teamData.three_percentage || 0.00,
+        teamData.ft_percentage || 0.00,
         teamData.userId
       ];
       
+      console.log('🔍 Creating team with data:', { id: teamData.id, name: teamData.name, gameId: teamData.gameId });
+      
       const result = await pgClient.query(query, values);
+      console.log('✅ Team created successfully:', result.rows[0]);
       return result.rows[0];
     } catch (error) {
       console.error('Error creating team:', error);
@@ -266,8 +287,8 @@ export class SupabaseService {
           "avgSteals", "avgBlocks", "avgTurnovers", "avgFouls", "avgFgPercentage",
           "avgThreePercentage", "avgFtPercentage", "avgPlusMinus", "totalPoints",
           "totalRebounds", "totalAssists", "totalSteals", "totalBlocks", "totalTurnovers",
-          "totalFouls", "totalFgMade", "totalFgAttempted", "totalThreeMade", "totalThreeAttempted",
-          "totalFtMade", "totalFtAttempted", "createdAt", "updatedAt", "userId"
+          "totalFouls",           "totalfgmade", "totalfgattempted", "totalthreemade", "totalthreeattempted",
+          "totalftmade", "totalftattempted", "createdAt", "updatedAt", "userId"
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW(), NOW(), $29)
         RETURNING *
@@ -286,9 +307,9 @@ export class SupabaseService {
         statsData.totalPoints || 0, statsData.totalRebounds || 0, statsData.totalAssists || 0,
         statsData.totalSteals || 0, statsData.totalBlocks || 0, statsData.totalTurnovers || 0, 
         statsData.totalFouls || 0,
-        statsData.totalFgMade || 0, statsData.totalFgAttempted || 0,
-        statsData.totalThreeMade || 0, statsData.totalThreeAttempted || 0,
-        statsData.totalFtMade || 0, statsData.totalFtAttempted || 0,
+        statsData.fgMade || 0, statsData.fgAttempted || 0,
+        statsData.threeMade || 0, statsData.threeAttempted || 0,
+        statsData.ftMade || 0, statsData.ftAttempted || 0,
         statsData.userId
       ];
       
@@ -338,12 +359,12 @@ export class SupabaseService {
           "totalBlocks" = $16,
           "totalTurnovers" = $17,
           "totalFouls" = $18,
-          "totalFgMade" = $19,
-          "totalFgAttempted" = $20,
-          "totalThreeMade" = $21,
-          "totalThreeAttempted" = $22,
-          "totalFtMade" = $23,
-          "totalFtAttempted" = $24,
+          "totalfgmade" = $19,
+          "totalfgattempted" = $20,
+          "totalthreemade" = $21,
+          "totalthreeattempted" = $22,
+          "totalftmade" = $23,
+          "totalftattempted" = $24,
           "updatedAt" = NOW()
         WHERE "playerName" = $25 AND "userId" = $26
         RETURNING *
@@ -368,12 +389,12 @@ export class SupabaseService {
         updateData.totalBlocks,
         updateData.totalTurnovers,
         updateData.totalFouls,
-        updateData.totalFgMade,
-        updateData.totalFgAttempted,
-        updateData.totalThreeMade,
-        updateData.totalThreeAttempted,
-        updateData.totalFtMade,
-        updateData.totalFtAttempted,
+                 updateData.fgMade,
+         updateData.fgAttempted,
+         updateData.threeMade,
+         updateData.threeAttempted,
+         updateData.ftMade,
+         updateData.ftAttempted,
         playerName,
         userId
       ];

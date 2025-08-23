@@ -184,7 +184,87 @@ const upload = multer({
 
 
 
-// Upload and process box score screenshot for review
+// Upload and process multiple box score screenshots for review
+router.post('/upload-multiple', authenticateToken, upload.array('screenshots', 10), async (req: Request, res: Response) => {
+  try {
+    const files = req.files as Express.Multer.File[];
+    
+    if (!files || files.length === 0) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'No files uploaded',
+      };
+      return res.status(400).json(response);
+    }
+
+    if (!req.user) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'User not authenticated',
+      };
+      return res.status(401).json(response);
+    }
+
+    console.log(`🆔 Processing ${files.length} files for user ${(req.user as any).id}`);
+    console.log(`🔍 Full req.user object:`, JSON.stringify(req.user, null, 2));
+
+    // Process files in batches of 2
+    const results = [];
+    const batchSize = 2;
+    
+    for (let i = 0; i < files.length; i += batchSize) {
+      const batch = files.slice(i, i + batchSize);
+      console.log(`📦 Processing batch ${Math.floor(i/batchSize) + 1}: ${batch.map(f => f.originalname).join(', ')}`);
+      
+      // Process batch in parallel
+      const batchPromises = batch.map(async (file) => {
+        const uniqueRequestId = Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9);
+        console.log(`🆔 Processing file: ${file.originalname} with ID: ${uniqueRequestId}`);
+        
+        const enhancedOCRService = new EnhancedOCRService();
+        const extractedData = await enhancedOCRService.extractStructuredDataFromImage(file.buffer, file.originalname);
+        
+        // Upload to Supabase
+        const imageNumber = extractImageNumber(file.originalname);
+        const userId = (req.user as any).id || (req.user as any).userId || 'unknown';
+        const fileName = `${userId}-${imageNumber}-boxscore.${file.originalname.split('.').pop()}`;
+        console.log(`🔍 Creating filename: ${fileName} for user: ${userId}`);
+        const originalImageUrl = await supabaseService.uploadImage(file.buffer, fileName);
+
+        return {
+          extractedData,
+          originalImageUrl,
+          fileName: file.originalname,
+          processedAt: new Date().toISOString()
+        };
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+      
+      console.log(`✅ Completed batch ${Math.floor(i/batchSize) + 1}`);
+    }
+
+    const response: ApiResponse = {
+      success: true,
+      data: {
+        results,
+        totalProcessed: results.length
+      }
+    };
+
+    return res.json(response);
+  } catch (error) {
+    console.error('Multiple upload error:', error);
+    const response: ApiResponse = {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to process images',
+    };
+    return res.status(500).json(response);
+  }
+});
+
+// Keep the original single upload for backward compatibility
 router.post('/upload', authenticateToken, upload.single('screenshot'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
@@ -386,9 +466,20 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       return res.status(401).json(response);
     }
 
-    const { gameData, playersData, originalImageBuffer } = req.body;
+    console.log('🔍 Received save request body:', JSON.stringify(req.body, null, 2));
+    
+    const { gameData, playersData, imageUrl } = req.body;
 
-    if (!gameData || !playersData || !originalImageBuffer) {
+    if (!gameData || !playersData || !imageUrl) {
+      console.log('❌ Missing required data:', {
+        hasGameData: !!gameData,
+        hasPlayersData: !!playersData,
+        hasImageUrl: !!imageUrl,
+        gameData: gameData,
+        playersDataLength: playersData?.length,
+        imageUrl: imageUrl
+      });
+      
       const response: ApiResponse = {
         success: false,
         error: 'Missing required data for saving',
@@ -396,10 +487,8 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       return res.status(400).json(response);
     }
 
-    // Convert base64 image back to buffer and upload to Supabase
-    const imageBuffer = Buffer.from(originalImageBuffer.split(',')[1], 'base64');
-    const fileName = `${Date.now()}-boxscore.jpg`;
-    const imageUrl = await supabaseService.uploadImage(imageBuffer, fileName);
+    // Use the existing Supabase URL instead of re-uploading
+    console.log('🔍 Using existing image URL for save:', imageUrl);
 
     // Create game record
     const game = await supabaseService.createGame({
@@ -413,12 +502,27 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       userId: req.user.userId,
     });
 
+    // Extract image number from the image URL for gameIdFromFile
+    // The imageUrl is a Supabase URL, so we need to extract the filename from it
+    const urlParts = imageUrl.split('/');
+    const fileName = urlParts[urlParts.length - 1]; // Get the last part of the URL (filename)
+    const playerImageNumber = extractImageNumber(fileName);
+    console.log(`🔍 Extracted image number for gameIdFromFile: ${playerImageNumber} from filename: ${fileName}`);
+    
+    // Debug: Log the first player data to see what we're working with
+    if (playersData.length > 0) {
+      console.log('🔍 Sample player data structure:', JSON.stringify(playersData[0], null, 2));
+    }
+
     // Create player records
     const playerPromises = playersData.map((playerData: any) => {
       console.log(`🔍 Player data for database:`, {
         id: playerData.id,
         name: playerData.name,
-        team: playerData.team
+        team: playerData.team,
+        position: playerData.position,
+        teammateGrade: playerData.teammateGrade,
+        playerId: playerData.playerId
       });
       
       // Calculate shooting percentages
@@ -435,26 +539,26 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
         : 0.00;
       
       return supabaseService.createPlayer({
-        id: playerData.id, // ✅ Add the ID field
-        name: playerData.name,
-        team: playerData.team,
-        teammateGrade: playerData.teammateGrade,
-        gameIdFromFile: playerData.gameIdFromFile,
-        playerId: playerData.playerId,
-        position: playerData.position,
-        points: playerData.points,
-        rebounds: playerData.rebounds,
-        assists: playerData.assists,
-        steals: playerData.steals,
-        blocks: playerData.blocks,
-        turnovers: playerData.turnovers,
-        fouls: playerData.fouls,
-        fgMade: playerData.fgMade,
-        fgAttempted: playerData.fgAttempted,
-        threeMade: playerData.threeMade,
-        threeAttempted: playerData.threeAttempted,
-        ftMade: playerData.ftMade,
-        ftAttempted: playerData.ftAttempted,
+        id: playerData.id || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: playerData.name || 'Unknown Player',
+        team: playerData.team || 'Unknown Team',
+        teammateGrade: playerData.teammateGrade || 'N/A',
+        gameIdFromFile: playerImageNumber,
+        playerId: playerData.playerId || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        position: playerData.position || 'Unknown',
+        points: playerData.points || 0,
+        rebounds: playerData.rebounds || 0,
+        assists: playerData.assists || 0,
+        steals: playerData.steals || 0,
+        blocks: playerData.blocks || 0,
+        turnovers: playerData.turnovers || 0,
+        fouls: playerData.fouls || 0,
+        fgMade: playerData.fgMade || 0,
+        fgAttempted: playerData.fgAttempted || 0,
+        threeMade: playerData.threeMade || 0,
+        threeAttempted: playerData.threeAttempted || 0,
+        ftMade: playerData.ftMade || 0,
+        ftAttempted: playerData.ftAttempted || 0,
         fg_percentage: fgPercentage,
         three_percentage: threePercentage,
         ft_percentage: ftPercentage,
@@ -528,19 +632,33 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
 
     // Create team records with image number format IDs
     const imageNumber = gameData.imageNumber || extractImageNumber(req.body.originalFileName);
+    
+    console.log('🔍 Creating teams with image number:', imageNumber);
+    console.log('🔍 Home team data:', { name: gameData.homeTeam, score: gameData.homeScore });
+    console.log('🔍 Away team data:', { name: gameData.awayTeam, score: gameData.awayScore });
+    
     const homeTeamData = {
       id: `team_${imageNumber}_home_${Math.random().toString(36).substr(2, 5)}`,
       name: gameData.homeTeam,
       isHome: true,
       points: gameData.homeScore,
-      ...homeTeamTotals, // Include all team totals
-      ...homeTeamPercentages, // Include all team percentages
+      rebounds: homeTeamTotals.rebounds || 0,
+      assists: homeTeamTotals.assists || 0,
+      steals: homeTeamTotals.steals || 0,
+      blocks: homeTeamTotals.blocks || 0,
+      turnovers: homeTeamTotals.turnovers || 0,
+      fouls: homeTeamTotals.fouls || 0,
+      fgMade: homeTeamTotals.fgMade || 0,
+      fgAttempted: homeTeamTotals.fgAttempted || 0,
+      threeMade: homeTeamTotals.threeMade || 0,
+      threeAttempted: homeTeamTotals.threeAttempted || 0,
+      ftMade: homeTeamTotals.ftMade || 0,
+      ftAttempted: homeTeamTotals.ftAttempted || 0,
+      fg_percentage: homeTeamPercentages.fg_percentage || 0.00,
+      three_percentage: homeTeamPercentages.three_percentage || 0.00,
+      ft_percentage: homeTeamPercentages.ft_percentage || 0.00,
       gameId: game.id,
       userId: req.user!.userId,
-      // Add team quarter totals if available
-      ...(gameData.teamAQuarters && {
-        teamAQuarters: gameData.teamAQuarters
-      })
     };
     
     const awayTeamData = {
@@ -548,22 +666,37 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       name: gameData.awayTeam,
       isHome: false,
       points: gameData.awayScore,
-      ...awayTeamTotals, // Include all team totals
-      ...awayTeamPercentages, // Include all team percentages
+      rebounds: awayTeamTotals.rebounds || 0,
+      assists: awayTeamTotals.assists || 0,
+      steals: awayTeamTotals.steals || 0,
+      blocks: awayTeamTotals.blocks || 0,
+      turnovers: awayTeamTotals.turnovers || 0,
+      fouls: awayTeamTotals.fouls || 0,
+      fgMade: awayTeamTotals.fgMade || 0,
+      fgAttempted: awayTeamTotals.fgAttempted || 0,
+      threeMade: awayTeamTotals.threeMade || 0,
+      threeAttempted: awayTeamTotals.threeAttempted || 0,
+      ftMade: awayTeamTotals.ftMade || 0,
+      ftAttempted: awayTeamTotals.ftAttempted || 0,
+      fg_percentage: awayTeamPercentages.fg_percentage || 0.00,
+      three_percentage: awayTeamPercentages.three_percentage || 0.00,
+      ft_percentage: awayTeamPercentages.ft_percentage || 0.00,
       gameId: game.id,
       userId: req.user!.userId,
-      // Add team quarter totals if available
-      ...(gameData.teamBQuarters && {
-        teamBQuarters: gameData.teamBQuarters
-      })
     };
 
+    console.log('🔍 About to create teams in database...');
+    console.log('🔍 Home team data for DB:', homeTeamData);
+    console.log('🔍 Away team data for DB:', awayTeamData);
+    
     const teamPromises = [
       supabaseService.createTeam(homeTeamData),
       supabaseService.createTeam(awayTeamData)
     ];
 
+    console.log('🔍 Team creation promises created, waiting for completion...');
     await Promise.all(teamPromises);
+    console.log('✅ Teams created successfully in database');
 
     // Helper function to update player stats in the player_stats table
     async function updatePlayerStats(gameId: string, playersData: any[], userId: string) {

@@ -326,7 +326,7 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
           teamBQuarters
         },
         playersData: players,
-        originalImageBuffer: originalImageUrl,
+        imageUrl: originalImageUrl,
       });
 
       if (response.data.success) {
@@ -394,7 +394,12 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
               src={originalImageUrl}
               alt="Box Score"
               className="w-full h-auto object-contain"
+              onLoad={() => console.log('🖼️ Image loaded successfully:', originalImageUrl)}
+              onError={(e) => console.error('❌ Image failed to load:', originalImageUrl, e)}
             />
+            <div className="p-2 text-xs text-gray-500 bg-gray-50">
+              Debug: {originalImageUrl}
+            </div>
           </div>
         </div>
 

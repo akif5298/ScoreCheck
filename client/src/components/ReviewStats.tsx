@@ -205,38 +205,65 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
     }
   }, [players, extractedData, gameData, teamAQuarters, teamBQuarters]);
 
-  // Compute display groups based on player position (P1-P5 = Home Team, P6-P10 = Away Team)
-  // This matches the actual layout in the Player Statistics area
-  // Group strictly by server-assigned teams to avoid mixing
+  // Helper function to extract player number from ID if available
   const getPlayerNum = (id?: string) => {
     if (!id) return Number.POSITIVE_INFINITY;
     const parts = id.split('_');
     return parts.length >= 2 ? parseInt(parts[1] as string) : Number.POSITIVE_INFINITY;
   };
 
-  // Use player ID to determine team assignment (P1-P5 = Team A, P6-P10 = Team B)
-  // This works regardless of whether team names are "Team A"/"Team B" or custom names
-  const homePlayers = players
-    .filter((p) => {
-      const playerNum = getPlayerNum(p.id);
-      return playerNum >= 1 && playerNum <= 5;
-    })
-    .sort((a, b) => getPlayerNum(a.id) - getPlayerNum(b.id));
+  // Group players by their actual team assignment from the server
+  // This is more reliable than trying to parse IDs
+  const homePlayers = players.filter(p => {
+    // Check if player belongs to the home team
+    return p.team === extractedData.homeTeam || p.team === 'Team A';
+  }).sort((a, b) => {
+    // Sort by original position if available, otherwise by name
+    const aPos = getPlayerNum(a.id);
+    const bPos = getPlayerNum(b.id);
+    if (aPos !== Number.POSITIVE_INFINITY && bPos !== Number.POSITIVE_INFINITY) {
+      return aPos - bPos;
+    }
+    return a.name.localeCompare(b.name);
+  });
 
-  const awayPlayers = players
-    .filter((p) => {
-      const playerNum = getPlayerNum(p.id);
-      return playerNum >= 6 && playerNum <= 10;
-    })
-    .sort((a, b) => getPlayerNum(a.id) - getPlayerNum(b.id));
+  const awayPlayers = players.filter(p => {
+    // Check if player belongs to the away team
+    return p.team === extractedData.awayTeam || p.team === 'Team B';
+  }).sort((a, b) => {
+    // Sort by original position if available, otherwise by name
+    const aPos = getPlayerNum(a.id);
+    const bPos = getPlayerNum(b.id);
+    if (aPos !== Number.POSITIVE_INFINITY && bPos !== Number.POSITIVE_INFINITY) {
+      return aPos - bPos;
+    }
+    return a.name.localeCompare(b.name);
+  });
+  
+  // Use the actual team assignments
+  const finalHomePlayers = homePlayers;
+  const finalAwayPlayers = awayPlayers;
   
   // Use the team names from the extracted data, with fallbacks
   const homeTeamName = extractedData.homeTeam || 'Team A';
   const awayTeamName = extractedData.awayTeam || 'Team B';
 
   // Display lists: cap to 5 but do not move players across teams
-  const displayHomePlayers = homePlayers.slice(0, maxPlayersPerTeam);
-  const displayAwayPlayers = awayPlayers.slice(0, maxPlayersPerTeam);
+  const displayHomePlayers = finalHomePlayers.slice(0, maxPlayersPerTeam);
+  const displayAwayPlayers = finalAwayPlayers.slice(0, maxPlayersPerTeam);
+
+  console.log('🔍 ReviewStats Team Assignment Debug:', {
+    totalPlayers: players.length,
+    homePlayers: homePlayers.length,
+    awayPlayers: awayPlayers.length,
+    finalHomePlayers: finalHomePlayers.length,
+    finalAwayPlayers: finalAwayPlayers.length,
+    displayHomePlayers: displayHomePlayers.length,
+    displayAwayPlayers: displayAwayPlayers.length,
+    homeTeamName: extractedData.homeTeam,
+    awayTeamName: extractedData.awayTeam,
+    playerTeams: players.map(p => ({ name: p.name, team: p.team }))
+  });
 
   // Derive totals from the capped lists (memoized to prevent re-renders)
   const awayTeamTotals = useMemo(() => ({

@@ -27,6 +27,15 @@ interface DashboardStats {
     avgRebounds: number;
     avgAssists: number;
   }[];
+  playerStats: any[];
+  gameHighs: {
+    points: any[];
+    rebounds: any[];
+    assists: any[];
+    steals: any[];
+    blocks: any[];
+    threeMade: any[];
+  };
 }
 
 const Dashboard: React.FC = () => {
@@ -75,6 +84,36 @@ const Dashboard: React.FC = () => {
           { name: 'Team B', avgPoints: 98.7, avgRebounds: 40.3, avgAssists: 22.8 },
           { name: 'Team C', avgPoints: 110.1, avgRebounds: 45.2, avgAssists: 26.7 },
         ],
+        playerStats: [
+          { playerName: 'Akif', avgPoints: 25.3, avgRebounds: 8.1, avgAssists: 6.2, avgSteals: 2.1, avgBlocks: 1.8, team: 'Team A, Team B', gamesPlayed: 12 },
+          { playerName: 'Anis', avgPoints: 22.7, avgRebounds: 6.8, avgAssists: 7.5, avgSteals: 1.9, avgBlocks: 0.9, team: 'Team B', gamesPlayed: 7 },
+        ],
+        gameHighs: {
+          points: [
+            { playerName: 'Akif', value: 45, team: 'Team A', date: new Date() },
+            { playerName: 'Anis', value: 38, team: 'Team B', date: new Date() },
+          ],
+          rebounds: [
+            { playerName: 'Akif', value: 18, team: 'Team A', date: new Date() },
+            { playerName: 'Anis', value: 15, team: 'Team B', date: new Date() },
+          ],
+          assists: [
+            { playerName: 'Anis', value: 15, team: 'Team B', date: new Date() },
+            { playerName: 'Akif', value: 12, team: 'Team A', date: new Date() },
+          ],
+          steals: [
+            { playerName: 'Akif', value: 6, team: 'Team A', date: new Date() },
+            { playerName: 'Anis', value: 5, team: 'Team B', date: new Date() },
+          ],
+          blocks: [
+            { playerName: 'Akif', value: 4, team: 'Team A', date: new Date() },
+            { playerName: 'Anis', value: 3, team: 'Team B', date: new Date() },
+          ],
+          threeMade: [
+            { playerName: 'Akif', value: 8, team: 'Team A', date: new Date() },
+            { playerName: 'Anis', value: 6, team: 'Team B', date: new Date() },
+          ],
+        },
       });
     } finally {
       setLoading(false);
@@ -225,57 +264,176 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Top Performers */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Scorers</h3>
-          <div className="space-y-3">
-            {stats?.topPerformers?.points?.slice(0, 3).map((player, index) => (
-              <div key={index} className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-gray-900">{player.playerName}</p>
-                  <p className="text-sm text-gray-600">{player.team}</p>
+
+
+      {/* Game Highs */}
+      <div className="card">
+        <h2 className="text-xl font-semibold text-gray-900 mb-6">Game Highs</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {/* Points */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most Points in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.points?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">points</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="font-semibold text-gray-900">{player.avgPoints.toFixed(1)} PPG</p>
+              ))}
+            </div>
+          </div>
+
+          {/* Rebounds */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most Rebounds in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.rebounds?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">rebounds</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
+          </div>
+
+          {/* Assists */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most Assists in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.assists?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">assists</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Steals */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most Steals in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.steals?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">steals</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Blocks */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most Blocks in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.blocks?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">blocks</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 3PM */}
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4 text-center">Most 3PM in a Game</h3>
+            <div className="space-y-3">
+              {stats?.gameHighs?.threeMade?.slice(0, 5).map((player, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  <div>
+                    <p className="font-medium text-gray-900">{player.playerName}</p>
+                    <p className="text-sm text-gray-600">{player.team}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-semibold text-gray-900 text-2xl">{player.value}</p>
+                    <p className="text-xs text-gray-500">3PM</p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
+      </div>
 
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Rebounders</h3>
-          <div className="space-y-3">
-            {stats?.topPerformers?.rebounds?.slice(0, 3).map((player, index) => (
-              <div key={index} className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-gray-900">{player.playerName}</p>
-                  <p className="text-sm text-gray-600">{player.team}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-semibold text-gray-900">{player.avgRebounds.toFixed(1)} RPG</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Top Assists</h3>
-          <div className="space-y-3">
-            {stats?.topPerformers?.assists?.slice(0, 3).map((player, index) => (
-              <div key={index} className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-gray-900">{player.playerName}</p>
-                  <p className="text-sm text-gray-600">{player.team}</p>
-                </div>
-                <div className="text-right">
-                  <p className="font-semibold text-gray-900">{player.avgAssists.toFixed(1)} APG</p>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* Player Averages */}
+      <div className="card">
+        <h2 className="text-xl font-semibold text-gray-900 mb-6">Player Averages (All Games)</h2>
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Player</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Team</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Games</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PPG</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">RPG</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">APG</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SPG</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">BPG</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {stats?.playerStats?.map((player, index) => (
+                <tr key={index} className="hover:bg-gray-50">
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.playerName}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm text-gray-600">{player.team}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm text-gray-600">{player.gamesPlayed || 0}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.avgPoints?.toFixed(1) || '0.0'}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.avgRebounds?.toFixed(1) || '0.0'}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.avgAssists?.toFixed(1) || '0.0'}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.avgSteals?.toFixed(1) || '0.0'}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-gray-900">{player.avgBlocks?.toFixed(1) || '0.0'}</div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

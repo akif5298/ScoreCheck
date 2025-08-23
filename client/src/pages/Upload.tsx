@@ -1,43 +1,180 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import toast from 'react-hot-toast';
-import { ArrowUpTrayIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { CloudArrowUpIcon } from '@heroicons/react/24/outline';
 import ReviewStats from '../components/ReviewStats';
 import PlayerNameAssignment from '../components/PlayerNameAssignment';
+
+// Interface for PlayerNameAssignment component
+interface PlayerNameAssignmentPlayerStats {
+  name: string;
+  team: string;
+  teammateGrade: string;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  fouls: number;
+  turnovers: number;
+  fgMade: number;
+  fgAttempted: number;
+  threeMade: number;
+  threeAttempted: number;
+  ftMade: number;
+  ftAttempted: number;
+}
+
+// Interface for ReviewStats component
+interface ReviewStatsPlayerStats {
+  name: string;
+  team: string;
+  teammateGrade: string;
+  points: number;
+  rebounds: number;
+  assists: number;
+  steals: number;
+  blocks: number;
+  fouls: number;
+  turnovers: number;
+  fgMade: number;
+  fgAttempted: number;
+  threeMade: number;
+  threeAttempted: number;
+  ftMade: number;
+  ftAttempted: number;
+  id: string;
+}
 
 interface ExtractedData {
   homeTeam: string;
   awayTeam: string;
   homeScore: number;
   awayScore: number;
-  players: any[];
+  players: PlayerNameAssignmentPlayerStats[];
   teamAQuarters?: { [key: string]: number };
   teamBQuarters?: { [key: string]: number };
+  teamATotals?: {
+    points: number;
+    rebounds: number;
+    assists: number;
+    steals: number;
+    blocks: number;
+    fouls: number;
+    turnovers: number;
+    fgMade: number;
+    fgAttempted: number;
+    threeMade: number;
+    threeAttempted: number;
+    ftMade: number;
+    ftAttempted: number;
+  };
+  teamBTotals?: {
+    points: number;
+    rebounds: number;
+    assists: number;
+    steals: number;
+    blocks: number;
+    fouls: number;
+    turnovers: number;
+    fgMade: number;
+    fgAttempted: number;
+    threeMade: number;
+    threeAttempted: number;
+    ftMade: number;
+    ftAttempted: number;
+  };
+}
+
+interface ProcessedGame {
+  extractedData: ExtractedData;
+  imageUrl: string;
+  fileName: string;
+  hasPlayerAssignment: boolean;
 }
 
 const Upload: React.FC = () => {
-  const navigate = useNavigate();
-  const [uploading, setUploading] = useState(false);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [preview, setPreview] = useState<string | null>(null);
-  const [extractedData, setExtractedData] = useState<ExtractedData | null>(null);
-  const [originalImageUrl, setOriginalImageUrl] = useState<string | null>(null);
-  const [originalFileName, setOriginalFileName] = useState<string | null>(null);
-  const [showNameAssignment, setShowNameAssignment] = useState(false);
+  const [processedGame, setProcessedGame] = useState<ProcessedGame | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showPlayerAssignment, setShowPlayerAssignment] = useState(false);
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    const file = acceptedFiles[0];
-    if (file) {
-      setUploadedFile(file);
+  // Debug: Monitor processedGame state changes
+  useEffect(() => {
+    console.log('🔍 processedGame state changed:', processedGame);
+    if (processedGame) {
+      console.log('🔍 processedGame.extractedData.players count:', processedGame.extractedData.players.length);
+      console.log('🔍 processedGame.hasPlayerAssignment:', processedGame.hasPlayerAssignment);
       
-      // Create preview
+      // Debug: Check if players array is intact
+      if (processedGame.extractedData.players) {
+        console.log('🔍 Players array details:');
+        console.log('  Array length:', processedGame.extractedData.players.length);
+        console.log('  Is array:', Array.isArray(processedGame.extractedData.players));
+        console.log('  First player:', processedGame.extractedData.players[0]);
+        console.log('  Last player:', processedGame.extractedData.players[processedGame.extractedData.players.length - 1]);
+      }
+    }
+  }, [processedGame]);
+
+  const onDrop = useCallback(async (acceptedFiles: File[]) => {
+    if (acceptedFiles.length === 0) return;
+
+    const file = acceptedFiles[0]; // Only process first file
+    setIsProcessing(true);
+    setError(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('screenshot', file);
+
+      const response = await fetch('/api/screenshots/upload', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        
+        // Convert the image buffer to a data URL that can be displayed
+        let imageUrl = '';
+        if (result.data.originalImageUrl) {
+          imageUrl = result.data.originalImageUrl;
+        } else {
+          // Fallback: create a data URL from the original file
       const reader = new FileReader();
-      reader.onload = () => {
-        setPreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+          const filePromise = new Promise<string>((resolve) => {
+            reader.onload = () => resolve(reader.result as string);
+          });
+          reader.readAsDataURL(file);
+          imageUrl = await filePromise;
+        }
+
+        // Debug: Log what we received from the backend
+        console.log('🔍 Backend response received:', result.data);
+        console.log('🔍 Players received from backend:', result.data.extractedData.players);
+        console.log('🔍 Player count received:', result.data.extractedData.players.length);
+        
+        const game: ProcessedGame = {
+          extractedData: result.data.extractedData,
+          imageUrl: imageUrl,
+          fileName: file.name,
+          hasPlayerAssignment: false,
+        };
+
+        setProcessedGame(game);
+        setShowPlayerAssignment(true); // Show player assignment first
+      } else {
+        const errorData = await response.json();
+        setError(errorData.error || 'Failed to process image');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      setError('Failed to upload image');
+    } finally {
+      setIsProcessing(false);
     }
   }, []);
 
@@ -46,291 +183,213 @@ const Upload: React.FC = () => {
     accept: {
       'image/*': ['.jpeg', '.jpg', '.png', '.gif']
     },
-    multiple: false,
-    maxSize: 10 * 1024 * 1024, // 10MB
+    multiple: false
   });
 
-  const handleUpload = async () => {
-    if (!uploadedFile) {
-      toast.error('Please select a file first');
-      return;
-    }
-
-    setUploading(true);
-    const formData = new FormData();
-    formData.append('screenshot', uploadedFile);
-
-    try {
-      const response = await axios.post('/api/screenshots/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      });
-
-      if (response.data.success) {
-        setExtractedData(response.data.data.extractedData);
-        setOriginalImageUrl(response.data.data.originalImageUrl);
-        setOriginalFileName(response.data.data.originalFileName);
-        setShowNameAssignment(true);
-        toast.success('Box score extracted successfully! Please assign player names.');
-      } else {
-        throw new Error(response.data.error || 'Upload failed');
-      }
-    } catch (error: any) {
-      console.error('Upload error:', error);
-      toast.error(error.response?.data?.error || 'Failed to upload screenshot');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const removeFile = () => {
-    setUploadedFile(null);
-    setPreview(null);
-  };
-
-  const handleBackToUpload = () => {
-    setExtractedData(null);
-    setOriginalImageUrl(null);
-    setOriginalFileName(null);
-    setUploadedFile(null);
-    setPreview(null);
-    setShowNameAssignment(false);
-  };
-
-  const handleNameAssignmentComplete = async (updatedPlayers: any[]) => {
-    console.log('🔍 Original OCR data:', extractedData?.players);
-    console.log('🔍 Updated players after name assignment:', updatedPlayers);
-    console.log('🔍 Team breakdown after name assignment:');
-    const teamAPlayers = updatedPlayers.filter(p => p.team === 'Team A');
-    const teamBPlayers = updatedPlayers.filter(p => p.team === 'Team B');
-    console.log(`   Team A: ${teamAPlayers.length} players (${teamAPlayers.map(p => p.name).join(', ')})`);
-    console.log(`   Team B: ${teamBPlayers.length} players (${teamBPlayers.map(p => p.name).join(', ')})`);
+  const handlePlayerAssignmentComplete = (updatedPlayers: PlayerNameAssignmentPlayerStats[]) => {
+    console.log('🔍 handlePlayerAssignmentComplete called with:', updatedPlayers.map(p => ({ name: p.name, team: p.team })));
+    console.log('🔍 Player count in handlePlayerAssignmentComplete:', updatedPlayers.length);
     
+    // The PlayerNameAssignment component now returns players with custom team names already applied
+    // We need to extract the team names from the players, but now they might not be "Team A" vs "Team B"
+    // Get unique team names from the updated players
+    const uniqueTeams = [...new Set(updatedPlayers.map(p => p.team))];
+    console.log('🔍 Unique teams after assignment:', uniqueTeams);
+    
+    // For now, let's use the first two unique teams as home and away
+    // This preserves the OCR team detection while allowing custom names
+    const homeTeam = uniqueTeams[0] || 'Team A';
+    const awayTeam = uniqueTeams[1] || 'Team B';
+    
+    console.log('🔍 Extracted team names:', { homeTeam, awayTeam });
+
+    // Update the current game with the assigned players and custom team names
+    setProcessedGame(prev => {
+      if (!prev) return null;
+      
+      const newProcessedGame = {
+        ...prev,
+        extractedData: {
+          ...prev.extractedData,
+          players: updatedPlayers,
+          homeTeam: homeTeam,
+          awayTeam: awayTeam
+        },
+        hasPlayerAssignment: true
+      };
+      
+      console.log('🔍 About to update processedGame state:');
+      console.log('  updatedPlayers count:', updatedPlayers.length);
+      console.log('  newProcessedGame.extractedData.players count:', newProcessedGame.extractedData.players.length);
+      console.log('  newProcessedGame:', newProcessedGame);
+      
+      return newProcessedGame;
+    });
+
+    setShowPlayerAssignment(false);
+  };
+
+  // Convert players to ReviewStats format
+  const convertPlayersForReviewStats = (players: PlayerNameAssignmentPlayerStats[]): ReviewStatsPlayerStats[] => {
+    console.log('🔍 convertPlayersForReviewStats called with:', players.length, 'players');
+    console.log('🔍 Players before conversion:', players.map(p => ({ name: p.name, team: p.team })));
+    
+    const converted = players.map((player, index) => ({
+      ...player,
+      id: `player_${index}_${Date.now()}` // Generate a unique ID
+    }));
+    
+    console.log('🔍 Players after conversion:', converted.length, 'players');
+    console.log('🔍 Converted players:', converted.map(p => ({ id: p.id, name: p.name, team: p.team })));
+    
+    return converted;
+  };
+
+  const handleSaveGame = async () => {
     try {
-      // Generate custom team names based on the assigned players
-      console.log('🔍 Calling team name generation API...');
-      const teamNameResponse = await axios.post('/api/screenshots/generate-team-names', {
-        players: updatedPlayers
+      // Get the current data from ReviewStats component
+      // We'll need to access this through a ref or state management
+      // For now, we'll use the processedGame data
+      const gameData = {
+        homeTeam: processedGame?.extractedData.homeTeam || 'Team A',
+        awayTeam: processedGame?.extractedData.awayTeam || 'Team B',
+        homeScore: processedGame?.extractedData.homeScore || 0,
+        awayScore: processedGame?.extractedData.awayScore || 0,
+        date: new Date().toISOString().split('T')[0],
+      };
+
+      const playersData = processedGame?.extractedData.players || [];
+
+      const response = await fetch('/api/screenshots/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify({
+          gameData,
+          playersData,
+          originalImageBuffer: processedGame?.imageUrl,
+        }),
       });
 
-      if (teamNameResponse.data.success) {
-        const { teamAName, teamBName } = teamNameResponse.data.data;
-        console.log('🔍 Generated custom team names:', { teamAName, teamBName });
-
-        // Update players to have custom team names in their team property
-        const playersWithCustomTeamNames = updatedPlayers.map(player => ({
-          ...player,
-          team: player.team === 'Team A' ? teamAName : (player.team === 'Team B' ? (teamBName || 'Team B') : player.team)
-        }));
-
-        console.log('🔍 Updated players with custom team names:', playersWithCustomTeamNames.map(p => ({ name: p.name, team: p.team })));
-
-        // Update extracted data with new players and custom team names
-        setExtractedData({
-          ...extractedData!,
-          players: playersWithCustomTeamNames,
-          homeTeam: teamAName,
-          awayTeam: teamBName || 'Team B'
-        });
+      if (response.ok) {
+        // Reset and show success
+        setProcessedGame(null);
+        setShowPlayerAssignment(false);
+        alert('Game saved successfully!');
       } else {
-        console.warn('⚠️ Team name generation failed, using generic names');
-        setExtractedData({
-          ...extractedData!,
-          players: updatedPlayers
-        });
+        const errorData = await response.json();
+        alert(`Failed to save game: ${errorData.error}`);
       }
     } catch (error) {
-      console.error('❌ Error generating team names:', error);
-      toast.error('Failed to generate custom team names, using generic names');
-      
-      // Fallback to original data with updated players
-      setExtractedData({
-        ...extractedData!,
-        players: updatedPlayers
-      });
+      console.error('Save error:', error);
+      alert('Failed to save game');
     }
-
-    setShowNameAssignment(false);
   };
 
-  const handleSaveComplete = () => {
-    // Redirect to dashboard after successful save
-    navigate('/');
+  const handleBack = () => {
+    if (showPlayerAssignment) {
+      setShowPlayerAssignment(false);
+    } else {
+      setProcessedGame(null);
+      setError(null);
+    }
   };
 
-  // Show name assignment overlay first, then review screen
-  if (extractedData && originalImageUrl && originalFileName) {
-    if (showNameAssignment) {
+  // Show PlayerNameAssignment if current game needs it
+  if (showPlayerAssignment && processedGame) {
       return (
         <PlayerNameAssignment
-          players={extractedData.players}
-          onComplete={handleNameAssignmentComplete}
-          onClose={() => setShowNameAssignment(false)}
-        />
-      );
-    } else {
-      return (
-        <ReviewStats
-          extractedData={extractedData}
-          originalImageUrl={originalImageUrl}
-          originalFileName={originalFileName}
-          onBack={handleBackToUpload}
-          onSave={handleSaveComplete}
-        />
-      );
+        players={processedGame.extractedData.players}
+        onComplete={handlePlayerAssignmentComplete}
+        onClose={() => setShowPlayerAssignment(false)}
+      />
+    );
+  }
+
+    // Show ReviewStats if current game is ready for review
+  if (processedGame && processedGame.hasPlayerAssignment) {
+    console.log('🔍 Rendering ReviewStats with processedGame:', processedGame);
+    console.log('🔍 Players in processedGame:', processedGame.extractedData.players.length);
+    
+    // Debug: Check if players array is intact before conversion
+    if (processedGame.extractedData.players) {
+      console.log('🔍 Players array before conversion:');
+      console.log('  Length:', processedGame.extractedData.players.length);
+      console.log('  Is array:', Array.isArray(processedGame.extractedData.players));
+      console.log('  Sample players:', processedGame.extractedData.players.slice(0, 3).map(p => ({ name: p.name, team: p.team })));
     }
+    
+    const reviewStatsData = {
+      ...processedGame.extractedData,
+      players: convertPlayersForReviewStats(processedGame.extractedData.players)
+    };
+    
+    console.log('🔍 Final reviewStatsData:', reviewStatsData);
+    console.log('🔍 Final player count for ReviewStats:', reviewStatsData.players.length);
+
+    return (
+      <ReviewStats
+        extractedData={reviewStatsData}
+        originalImageUrl={processedGame.imageUrl}
+        originalFileName={processedGame.fileName}
+        onBack={handleBack}
+        onSave={handleSaveGame}
+      />
+    );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900">Upload Box Score</h1>
-        <p className="text-gray-600">Upload a screenshot of your NBA 2K25 box score to extract and analyze the data</p>
+    <div className="min-h-screen bg-gray-50 py-8">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="text-center">
+          <h1 className="text-3xl font-bold text-gray-900 mb-8">
+            Upload Box Score Screenshot
+          </h1>
+          <p className="text-lg text-gray-600 mb-8">
+            Upload a screenshot of a box score to extract and review the game data
+          </p>
       </div>
 
-      {/* Upload Area */}
-      <div className="card">
-        <div className="space-y-4">
+                 <div className="bg-white rounded-lg shadow-lg p-8">
           <div
             {...getRootProps()}
-            className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors duration-200 ${
+             className={`border-2 border-dashed rounded-lg p-12 text-center cursor-pointer transition-colors ${
               isDragActive
-                ? 'border-primary-400 bg-primary-50'
-                : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
+                 ? 'border-blue-400 bg-blue-50'
+                 : 'border-gray-300 hover:border-gray-400'
             }`}
           >
             <input {...getInputProps()} />
-            <ArrowUpTrayIcon className="mx-auto h-12 w-12 text-gray-400" />
-            <div className="mt-4">
-              {isDragActive ? (
-                <p className="text-primary-600">Drop the screenshot here...</p>
+             <CloudArrowUpIcon className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+             
+             {isProcessing ? (
+               <div className="space-y-4">
+                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
+                 <p className="text-gray-600">Processing image...</p>
+               </div>
               ) : (
                 <div>
-                  <p className="text-gray-600">
-                    Drag and drop a screenshot here, or{' '}
-                    <span className="text-primary-600 hover:text-primary-500">
-                      click to select
-                    </span>
-                  </p>
-                  <p className="text-sm text-gray-500 mt-2">
-                    Supports JPG, PNG, GIF up to 10MB
+                 <p className="text-lg text-gray-600 mb-4">
+                   {isDragActive
+                     ? 'Drop the file here...'
+                     : 'Drag and drop your screenshot here, or click to browse'}
+                 </p>
+                 <p className="text-sm text-gray-500 mb-4">
+                   Supported formats: JPEG, PNG, GIF (Max 10MB)
                   </p>
                 </div>
               )}
-            </div>
-          </div>
 
-          {/* File Preview */}
-          {uploadedFile && (
-            <div className="border border-gray-200 rounded-lg p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
-                    <div className="w-5 h-5 bg-primary-600 rounded"></div>
-                  </div>
-                  <div>
-                    <p className="font-medium text-gray-900">{uploadedFile.name}</p>
-                    <p className="text-sm text-gray-500">
-                      {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={removeFile}
-                  className="p-1 text-gray-400 hover:text-gray-600 transition-colors duration-200"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
-              </div>
-              
-              {/* Image Preview */}
-              {preview && (
-                <div className="mt-4">
-                  <img
-                    src={preview}
-                    alt="Preview"
-                    className="max-w-full h-64 object-contain rounded-lg border border-gray-200"
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Upload Button */}
-          {uploadedFile && (
-            <div className="flex justify-end">
-              <button
-                onClick={handleUpload}
-                disabled={uploading}
-                className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-              >
-                {uploading ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    <span>Processing...</span>
-                  </>
-                ) : (
-                  <>
-                    <ArrowUpTrayIcon className="w-4 h-4" />
-                    <span>Upload & Extract Data</span>
-                  </>
-                )}
-              </button>
+             {error && (
+               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                 <p className="text-red-800">{error}</p>
             </div>
           )}
         </div>
-      </div>
-
-      {/* Instructions */}
-      <div className="card">
-        <h2 className="text-lg font-semibold text-gray-900 mb-4">How to get the best results</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <h3 className="font-medium text-gray-900 mb-2">📱 Screenshot Tips</h3>
-            <ul className="text-sm text-gray-600 space-y-1">
-              <li>• Take a clear, high-resolution screenshot</li>
-              <li>• Ensure all text is readable and not cut off</li>
-              <li>• Include the complete box score section</li>
-              <li>• Avoid blurry or distorted images</li>
-            </ul>
-          </div>
-          <div>
-            <h3 className="font-medium text-gray-900 mb-2">🔍 What we extract</h3>
-            <ul className="text-sm text-gray-600 space-y-1">
-              <li>• Player names and statistics</li>
-              <li>• Team scores and totals</li>
-              <li>• Shooting percentages</li>
-              <li>• Game date and teams</li>
-            </ul>
           </div>
         </div>
-      </div>
-
-      {/* Enhanced OCR Notice */}
-      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-green-800 mb-2">
-          🚀 Enhanced OCR Processing
-        </h3>
-        <p className="text-sm text-green-700">
-          Our enhanced OCR system uses optimized coordinates and advanced preprocessing to achieve 100% accuracy. 
-          Images are automatically enhanced using multi-strategy preprocessing before text extraction.
-        </p>
-      </div>
-
-      {/* Processing Notice */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="text-sm font-medium text-blue-800 mb-2">
-          🔍 Data Extraction Process
-        </h3>
-        <p className="text-sm text-blue-700">
-          After upload, we'll automatically preprocess your image and extract all player statistics using optimized coordinates. 
-          You'll then be able to review and edit the data before saving it to your database.
-        </p>
-      </div>
-
-
     </div>
   );
 };

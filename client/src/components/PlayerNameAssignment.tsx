@@ -18,6 +18,7 @@ interface PlayerStats {
   threeAttempted: number;
   ftMade: number;
   ftAttempted: number;
+  originalPlayerId?: string; // Optional: for tracking original P1, P2, P3, etc.
 }
 
 interface PlayerNameAssignmentProps {
@@ -30,6 +31,43 @@ const AVAILABLE_NAMES = [
   'Akif', 'Abdul', 'Anis', 'Ankit', 'Nillan', 'Ikroop', 'TV', 'Kashif', 'Dylan'
 ];
 
+// Helper function to get position from player ID
+const getPositionFromPlayerId = (playerId: string): string => {
+  // Extract the number from P1, P2, P3, etc.
+  const match = playerId.match(/P(\d+)/);
+  if (!match) return 'Unknown';
+  
+  const playerNumber = parseInt(match[1]);
+  
+  // Map player numbers to positions
+  switch (playerNumber) {
+    case 1:
+    case 6:
+      return 'PG'; // Point Guard
+    case 2:
+    case 7:
+      return 'SG'; // Shooting Guard
+    case 3:
+    case 8:
+      return 'SF'; // Small Forward
+    case 4:
+    case 9:
+      return 'PF'; // Power Forward
+    case 5:
+    case 10:
+      return 'C';  // Center
+    default:
+      return 'Unknown';
+  }
+};
+
+// Helper function to check if a player is an AI player
+const isAIPlayer = (name: string): boolean => {
+  const aiKeywords = ['ai', 'al', 'player'];
+  const lowerName = name.toLowerCase();
+  return aiKeywords.some(keyword => lowerName.includes(keyword));
+};
+
 const PlayerNameAssignment: React.FC<PlayerNameAssignmentProps> = ({
   players,
   onComplete,
@@ -38,10 +76,23 @@ const PlayerNameAssignment: React.FC<PlayerNameAssignmentProps> = ({
   const [playerAssignments, setPlayerAssignments] = useState<{ [key: string]: string }>({});
   const [assignedNames, setAssignedNames] = useState<Set<string>>(new Set());
 
+  console.log('🔍 PlayerNameAssignment Debug:', {
+    totalPlayers: players.length,
+    players: players.map((p, i) => ({ index: i, name: p.name, team: p.team }))
+  });
+  
+  // Debug: Log each player individually to see if any are missing
+  console.log('🔍 INDIVIDUAL PLAYER CHECK:');
+  players.forEach((player, index) => {
+    console.log(`  Player ${index + 1}: Name="${player.name}", Team="${player.team}", Points=${player.points}`);
+  });
+
   // Initialize assignments with existing names or player IDs
   useEffect(() => {
     const initialAssignments: { [key: string]: string } = {};
     const usedNames = new Set<string>();
+
+    console.log('🔍 Processing players for assignment:', players.length, 'players');
 
     players.forEach((player, index) => {
       const playerId = `P${index + 1}`;
@@ -51,10 +102,19 @@ const PlayerNameAssignment: React.FC<PlayerNameAssignmentProps> = ({
       } else {
         initialAssignments[playerId] = playerId; // Keep player ID if no valid name
       }
+      
+      console.log(`🔍 Player ${index + 1}:`, { 
+        originalName: player.name, 
+        assignedName: initialAssignments[playerId], 
+        team: player.team 
+      });
     });
 
     setPlayerAssignments(initialAssignments);
     setAssignedNames(usedNames);
+    
+    console.log('🔍 Initial assignments:', initialAssignments);
+    console.log('🔍 Used names:', Array.from(usedNames));
   }, [players]);
 
   const handleNameAssignment = (playerId: string, name: string) => {
@@ -81,32 +141,109 @@ const PlayerNameAssignment: React.FC<PlayerNameAssignmentProps> = ({
   };
 
   const handleComplete = () => {
-    // Update players with assigned names AND preserve team assignments
+    // Update players with assigned names but PRESERVE original OCR team detection and player IDs
     const updatedPlayers = players.map((player, index) => {
       const playerId = `P${index + 1}`;
       const assignedName = playerAssignments[playerId];
       
-      // Determine team based on player position (P1-P5 = Team A, P6-P10 = Team B)
-      const team = index < 5 ? 'Team A' : 'Team B';
-      
       // Use the assigned name if it's a custom name, otherwise keep original
       const finalName = AVAILABLE_NAMES.includes(assignedName) ? assignedName : player.name;
       
-      // IMPORTANT: Preserve the original player ID from OCR service for position mapping
-      // The backend needs the original ID format (e.g., "IMG_123_1_A") to determine positions
+      // IMPORTANT: Keep the original OCR team detection instead of forcing position-based assignment
+      // This preserves the actual team relationships detected by the OCR
+      const team = player.team; // Keep original team from OCR
+      
       return {
         ...player,
         name: finalName,
-        team: team, // ✅ Preserve team assignment based on position
-        // Keep original id field intact for position mapping
+        team: team, // Preserve OCR team detection
+        originalPlayerId: playerId // Preserve the original player ID for position mapping
       };
     });
 
     console.log('🔍 PlayerNameAssignment: Updated players with team assignments:', updatedPlayers.map(p => ({ name: p.name, team: p.team })));
 
-    // Generate custom team names based on the updated players
-    // This will be handled in the parent component after assignment
-    onComplete(updatedPlayers);
+    // Generate custom team names ONLY for teams that have assigned custom names
+    // Get unique team names from OCR detection (could be "Team A", "Team B", or custom names)
+    const uniqueTeams = [...new Set(updatedPlayers.map(p => p.team))];
+    console.log('🔍 Unique teams detected by OCR:', uniqueTeams);
+    
+        // Generate custom team names only for teams that have custom names assigned
+    const teamCustomNames: { [key: string]: string } = {};
+    
+    uniqueTeams.forEach(teamName => {
+      const teamPlayers = updatedPlayers.filter(p => p.team === teamName);
+      
+      // Check if this team has any custom names assigned
+      const hasCustomNames = teamPlayers.some(p => AVAILABLE_NAMES.includes(p.name));
+      
+      if (hasCustomNames) {
+        // This team has custom names - generate position-based team name
+        const sortedTeamPlayers = teamPlayers.sort((a, b) => {
+          const aId = (a as any).originalPlayerId || 'Unknown';
+          const bId = (b as any).originalPlayerId || 'Unknown';
+          
+          // Extract numbers from P1, P2, P3, etc.
+          const aMatch = aId.match(/P(\d+)/);
+          const bMatch = bId.match(/P(\d+)/);
+          
+          if (aMatch && bMatch) {
+            return parseInt(aMatch[1]) - parseInt(bMatch[1]);
+          }
+          return 0;
+        });
+        
+        // Generate team name based on positions
+        const teamNameParts = sortedTeamPlayers.map((player) => {
+          // Use the preserved original player ID for position mapping
+          const playerId = (player as any).originalPlayerId || 'Unknown';
+          const position = getPositionFromPlayerId(playerId);
+          
+          // Check if this is a custom name from assignment
+          if (AVAILABLE_NAMES.includes(player.name)) {
+            return `${player.name} (${position})`;
+          }
+          // Check if this is an AI player
+          else if (isAIPlayer(player.name)) {
+            return `AI (${position})`;
+          }
+          // Otherwise it's a random/unassigned player
+          else {
+            return `Random (${position})`;
+          }
+        });
+        
+        // Join all position-based names
+        teamCustomNames[teamName] = teamNameParts.join(' + ');
+        
+        console.log(`🔍 Team ${teamName} has custom names - generating position-based name:`, {
+          teamPlayers: teamPlayers.map(p => ({ name: p.name, isCustom: AVAILABLE_NAMES.includes(p.name), isAI: isAIPlayer(p.name) })),
+          sortedTeamPlayers: sortedTeamPlayers.map(p => ({ name: p.name, isCustom: AVAILABLE_NAMES.includes(p.name), isAI: isAIPlayer(p.name) })),
+          teamNameParts: teamNameParts,
+          finalTeamName: teamCustomNames[teamName]
+        });
+      } else {
+        // This team has no custom names - keep original team name
+        teamCustomNames[teamName] = teamName;
+        
+        console.log(`🔍 Team ${teamName} has no custom names - keeping original name:`, {
+          teamPlayers: teamPlayers.map(p => ({ name: p.name, isCustom: AVAILABLE_NAMES.includes(p.name), isAI: isAIPlayer(p.name) })),
+          finalTeamName: teamCustomNames[teamName]
+        });
+      }
+    });
+    
+    console.log('🔍 Generated custom team names:', teamCustomNames);
+
+    // Now apply the custom team names to the players
+    const playersWithCustomTeams = updatedPlayers.map(player => ({
+      ...player,
+      team: teamCustomNames[player.team] || player.team // Use custom name if available, otherwise keep original
+    }));
+
+    console.log('🔍 Final players with custom team names:', playersWithCustomTeams.map(p => ({ name: p.name, team: p.team })));
+
+    onComplete(playersWithCustomTeams);
   };
 
   const getAvailableNamesForPlayer = (currentPlayerId: string) => {

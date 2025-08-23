@@ -266,25 +266,29 @@ export class SupabaseService {
           "avgSteals", "avgBlocks", "avgTurnovers", "avgFouls", "avgFgPercentage",
           "avgThreePercentage", "avgFtPercentage", "avgPlusMinus", "totalPoints",
           "totalRebounds", "totalAssists", "totalSteals", "totalBlocks", "totalTurnovers",
-          "totalFouls", "createdAt", "updatedAt", "userId"
+          "totalFouls", "totalFgMade", "totalFgAttempted", "totalThreeMade", "totalThreeAttempted",
+          "totalFtMade", "totalFtAttempted", "createdAt", "updatedAt", "userId"
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW(), NOW(), $23)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW(), NOW(), $29)
         RETURNING *
       `;
       const values = [
         statsData.id || `player_${Date.now()}`,
         statsData.name || statsData.playerName, statsData.team, 
         statsData.gamesPlayed || 1,
-        statsData.points || 0, statsData.rebounds || 0, statsData.assists || 0,
-        statsData.steals || 0, statsData.blocks || 0, statsData.turnovers || 0, 
-        statsData.fouls || 0, 
-        statsData.fgMade && statsData.fgAttempted ? (statsData.fgMade / statsData.fgAttempted * 100) : 0,
-        statsData.threeMade && statsData.threeAttempted ? (statsData.threeMade / statsData.threeAttempted * 100) : 0,
-        statsData.ftMade && statsData.ftAttempted ? (statsData.ftMade / statsData.ftAttempted * 100) : 0,
+        statsData.avgPoints || 0, statsData.avgRebounds || 0, statsData.avgAssists || 0,
+        statsData.avgSteals || 0, statsData.avgBlocks || 0, statsData.avgTurnovers || 0, 
+        statsData.avgFouls || 0, 
+        statsData.avgFgPercentage || 0,
+        statsData.avgThreePercentage || 0,
+        statsData.avgFtPercentage || 0,
         0, // avgPlusMinus
-        statsData.points || 0, statsData.rebounds || 0, statsData.assists || 0,
-        statsData.steals || 0, statsData.blocks || 0, statsData.turnovers || 0, 
-        statsData.fouls || 0,
+        statsData.totalPoints || 0, statsData.totalRebounds || 0, statsData.totalAssists || 0,
+        statsData.totalSteals || 0, statsData.totalBlocks || 0, statsData.totalTurnovers || 0, 
+        statsData.totalFouls || 0,
+        statsData.totalFgMade || 0, statsData.totalFgAttempted || 0,
+        statsData.totalThreeMade || 0, statsData.totalThreeAttempted || 0,
+        statsData.totalFtMade || 0, statsData.totalFtAttempted || 0,
         statsData.userId
       ];
       
@@ -293,6 +297,108 @@ export class SupabaseService {
     } catch (error) {
       console.error('Error creating player stats:', error);
       throw error;
+    }
+  }
+
+  async getPlayerStatsByPlayerName(playerName: string, userId: string) {
+    try {
+      const query = `
+        SELECT * FROM player_stats 
+        WHERE "playerName" = $1 AND "userId" = $2
+      `;
+      
+      const result = await pgClient.query(query, [playerName, userId]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error getting player stats by name:', error);
+      return null;
+    }
+  }
+
+  async updatePlayerStats(playerName: string, userId: string, updateData: any) {
+    try {
+      const query = `
+        UPDATE player_stats 
+        SET 
+          "gamesPlayed" = $1,
+          "avgPoints" = $2,
+          "avgRebounds" = $3,
+          "avgAssists" = $4,
+          "avgSteals" = $5,
+          "avgBlocks" = $6,
+          "avgTurnovers" = $7,
+          "avgFouls" = $8,
+          "avgFgPercentage" = $9,
+          "avgThreePercentage" = $10,
+          "avgFtPercentage" = $11,
+          "totalPoints" = $12,
+          "totalRebounds" = $13,
+          "totalAssists" = $14,
+          "totalSteals" = $15,
+          "totalBlocks" = $16,
+          "totalTurnovers" = $17,
+          "totalFouls" = $18,
+          "totalFgMade" = $19,
+          "totalFgAttempted" = $20,
+          "totalThreeMade" = $21,
+          "totalThreeAttempted" = $22,
+          "totalFtMade" = $23,
+          "totalFtAttempted" = $24,
+          "updatedAt" = NOW()
+        WHERE "playerName" = $25 AND "userId" = $26
+        RETURNING *
+      `;
+      
+      const values = [
+        updateData.gamesPlayed,
+        updateData.avgPoints,
+        updateData.avgRebounds,
+        updateData.avgAssists,
+        updateData.avgSteals,
+        updateData.avgBlocks,
+        updateData.avgTurnovers,
+        updateData.avgFouls,
+        updateData.avgFgPercentage,
+        updateData.avgThreePercentage,
+        updateData.avgFtPercentage,
+        updateData.totalPoints,
+        updateData.totalRebounds,
+        updateData.totalAssists,
+        updateData.totalSteals,
+        updateData.totalBlocks,
+        updateData.totalTurnovers,
+        updateData.totalFouls,
+        updateData.totalFgMade,
+        updateData.totalFgAttempted,
+        updateData.totalThreeMade,
+        updateData.totalThreeAttempted,
+        updateData.totalFtMade,
+        updateData.totalFtAttempted,
+        playerName,
+        userId
+      ];
+      
+      const result = await pgClient.query(query, values);
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating player stats:', error);
+      throw error;
+    }
+  }
+
+  async getPlayerStats(userId: string) {
+    try {
+      const query = `
+        SELECT * FROM player_stats 
+        WHERE "userId" = $1
+        ORDER BY "totalPoints" DESC
+      `;
+      
+      const result = await pgClient.query(query, [userId]);
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting player stats:', error);
+      return [];
     }
   }
 

@@ -76,6 +76,7 @@ export interface PlayerStats {
   id: string;
   playerName: string;
   team: string;
+  teams?: Set<string>; // Optional field for tracking multiple teams during processing
   gamesPlayed: number;
   avgPoints: number;
   avgRebounds: number;
@@ -193,6 +194,14 @@ export interface AnalyticsData {
     points: PlayerStats[];
     rebounds: PlayerStats[];
     assists: PlayerStats[];
+  };
+  gameHighs: {
+    points: any[];
+    rebounds: any[];
+    assists: any[];
+    steals: any[];
+    blocks: any[];
+    threeMade: any[];
   };
 }
 

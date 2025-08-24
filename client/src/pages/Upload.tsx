@@ -144,6 +144,17 @@ const Upload: React.FC = () => {
     }
   }, [processedGame]);
 
+  // Debug: Monitor multipleUploadState changes
+  useEffect(() => {
+    console.log('🔍 multipleUploadState changed:', {
+      filesCount: multipleUploadState.files.length,
+      currentlyReviewing: multipleUploadState.currentlyReviewing,
+      isUploading: multipleUploadState.isUploading,
+      processingComplete: multipleUploadState.processingComplete,
+      fileStatuses: multipleUploadState.files.map(f => ({ fileName: f.fileName, status: f.status }))
+    });
+  }, [multipleUploadState]);
+
   // Multiple file upload handler
   const handleMultipleUpload = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -205,9 +216,14 @@ const Upload: React.FC = () => {
           };
         });
 
+        // Mark the first file as reviewing and set it for review
+        const filesWithFirstReviewing = processedFiles.map((file, index) => 
+          index === 0 ? { ...file, status: 'reviewing' as const } : file
+        );
+
         setMultipleUploadState(prev => ({
           ...prev,
-          files: processedFiles,
+          files: filesWithFirstReviewing,
           isUploading: false,
           processingComplete: true,
           currentlyReviewing: 0 // Start with first file
@@ -392,8 +408,19 @@ const Upload: React.FC = () => {
         const result = await response.json();
         if (result.success) {
           toast.success('Game saved successfully!');
-          setProcessedGame(null);
-          setShowPlayerAssignment(false);
+          
+          // Check if we're in multiple upload mode
+          if (isMultipleMode && multipleUploadState.files.length > 0) {
+            console.log('🎯 Multiple upload mode detected, moving to next file...');
+            // Add a small delay to ensure state updates are processed
+            setTimeout(() => {
+              handleNextFileInQueue();
+            }, 100);
+          } else {
+            // Single upload mode - reset everything
+            setProcessedGame(null);
+            setShowPlayerAssignment(false);
+          }
         } else {
           toast.error(result.message || 'Failed to save game');
         }
@@ -414,45 +441,86 @@ const Upload: React.FC = () => {
     const currentIndex = multipleUploadState.currentlyReviewing;
     if (currentIndex === null) return;
 
-    // Mark current file as completed
-    setMultipleUploadState(prev => ({
-      ...prev,
-      files: prev.files.map((file, index) => 
-        index === currentIndex 
-          ? { ...file, status: 'completed' as const }
-          : file
-      )
-    }));
+    console.log(`🎯 handleNextFileInQueue called for current index: ${currentIndex}`);
+
+    // Get current state and update it directly to avoid timing issues
+    const currentState = multipleUploadState;
+    
+    // Mark current file as completed and find next file
+    const updatedFiles = currentState.files.map((file, index) => 
+      index === currentIndex 
+        ? { ...file, status: 'completed' as const }
+        : file
+    );
+    
+    console.log(`✅ Marked file ${currentIndex} as completed`);
 
     // Find next file to review
-    const nextIndex = multipleUploadState.files.findIndex((file, index) => 
+    const nextIndex = updatedFiles.findIndex((file, index) => 
       index > currentIndex && file.status === 'ready'
     );
 
+    console.log(`🔍 Next file index found: ${nextIndex}`);
+    console.log(`🔍 All file statuses:`, updatedFiles.map((f, i) => ({ index: i, fileName: f.fileName, status: f.status })));
+    
+    // If no 'ready' file found, look for any file that's not completed
+    if (nextIndex === -1) {
+      const alternativeNextIndex = updatedFiles.findIndex((file, index) => 
+        index > currentIndex && file.status !== 'completed'
+      );
+      console.log(`🔍 Alternative next index found: ${alternativeNextIndex}`);
+      if (alternativeNextIndex !== -1) {
+        // Update the status to 'ready' if it's not already
+        updatedFiles[alternativeNextIndex] = { ...updatedFiles[alternativeNextIndex], status: 'ready' as const };
+        console.log(`🔍 Updated file ${alternativeNextIndex} status to 'ready'`);
+        // Use the alternative index
+        const finalNextIndex = alternativeNextIndex;
+        const nextFile = updatedFiles[finalNextIndex];
+        if (nextFile.processedGame) {
+          console.log(`🎯 Moving to alternative next file: ${nextFile.fileName} (${finalNextIndex + 1}/${updatedFiles.length})`);
+          
+          // Update state with both the completed file and the next file status
+          setMultipleUploadState({
+            ...currentState,
+            currentlyReviewing: finalNextIndex,
+            files: updatedFiles.map((file, index) => 
+              index === finalNextIndex 
+                ? { ...file, status: 'reviewing' as const }
+                : file
+            )
+          });
+
+          setProcessedGame(nextFile.processedGame);
+          setShowPlayerAssignment(true);
+          return; // Exit early since we handled the alternative case
+        }
+      }
+    }
+
     if (nextIndex !== -1) {
       // Move to next file
-      const nextFile = multipleUploadState.files[nextIndex];
+      const nextFile = updatedFiles[nextIndex];
       if (nextFile.processedGame) {
-        setMultipleUploadState(prev => ({
-          ...prev,
+        console.log(`🎯 Moving to next file: ${nextFile.fileName} (${nextIndex + 1}/${updatedFiles.length})`);
+        
+        // Update state with both the completed file and the next file status
+        setMultipleUploadState({
+          ...currentState,
           currentlyReviewing: nextIndex,
-          files: prev.files.map((file, index) => 
+          files: updatedFiles.map((file, index) => 
             index === nextIndex 
               ? { ...file, status: 'reviewing' as const }
               : file
           )
-        }));
+        });
 
         setProcessedGame(nextFile.processedGame);
         setShowPlayerAssignment(true);
-        
-        console.log(`🎯 Moving to next file: ${nextFile.fileName} (${nextIndex + 1}/${multipleUploadState.files.length})`);
       }
     } else {
       // All files completed
       console.log('🎉 All files completed!');
-      // alert(`All ${multipleUploadState.files.length} games saved successfully!`);
-      console.log(`All ${multipleUploadState.files.length} games saved successfully!`);
+      toast.success(`All ${updatedFiles.length} games saved successfully!`);
       
       // Reset everything
       setProcessedGame(null);

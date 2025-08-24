@@ -30,32 +30,40 @@ async function updatePlayerStats(gameId: string, playersData: any[], userId: str
         // Update existing stats
         console.log(`📊 Updating stats for existing player: ${playerData.name}`);
         
-        const updatedStats = {
-          gamesPlayed: existingStats.gamesPlayed + 1,
-          totalPoints: existingStats.totalPoints + (playerData.points || 0),
-          totalRebounds: existingStats.totalRebounds + (playerData.rebounds || 0),
-          totalAssists: existingStats.totalAssists + (playerData.assists || 0),
-          totalSteals: existingStats.totalSteals + (playerData.steals || 0),
-          totalBlocks: existingStats.totalBlocks + (playerData.blocks || 0),
-          totalTurnovers: existingStats.totalTurnovers + (playerData.turnovers || 0),
-          totalFouls: existingStats.totalFouls + (playerData.fouls || 0),
-          totalFgMade: existingStats.totalFgMade + (playerData.fgMade || 0),
-          totalFgAttempted: existingStats.totalFgAttempted + (playerData.fgAttempted || 0),
-          totalThreeMade: existingStats.totalThreeMade + (playerData.threeMade || 0),
-          totalThreeAttempted: existingStats.totalThreeAttempted + (playerData.threeAttempted || 0),
-          totalFtMade: existingStats.totalFtMade + (playerData.ftMade || 0),
-          totalFtAttempted: existingStats.totalFtAttempted + (playerData.ftAttempted || 0),
-          avgPoints: 0, // Will be calculated below
-          avgRebounds: 0, // Will be calculated below
-          avgAssists: 0, // Will be calculated below
-          avgSteals: 0, // Will be calculated below
-          avgBlocks: 0, // Will be calculated below
-          avgTurnovers: 0, // Will be calculated below
-          avgFouls: 0, // Will be calculated below
-          avgFgPercentage: 0, // Will be calculated below
-          avgThreePercentage: 0, // Will be calculated below
-          avgFtPercentage: 0, // Will be calculated below
+        // Helper function to safely add numbers and handle NaN
+        const safeAdd = (a: number, b: number) => {
+          const aVal = isNaN(a) ? 0 : (a || 0);
+          const bVal = isNaN(b) ? 0 : (b || 0);
+          return aVal + bVal;
         };
+
+                 const updatedStats = {
+           gamesPlayed: existingStats.gamesPlayed + 1,
+           totalPoints: safeAdd(existingStats.totalPoints, playerData.points),
+           totalRebounds: safeAdd(existingStats.totalRebounds, playerData.rebounds),
+           totalAssists: safeAdd(existingStats.totalAssists, playerData.assists),
+           totalSteals: safeAdd(existingStats.totalSteals, playerData.steals),
+           totalBlocks: safeAdd(existingStats.totalBlocks, playerData.blocks),
+           totalTurnovers: safeAdd(existingStats.totalTurnovers, playerData.turnovers),
+           totalFouls: safeAdd(existingStats.totalFouls, playerData.fouls),
+           totalFgMade: safeAdd(existingStats.totalFgMade, playerData.fgMade),
+           totalFgAttempted: safeAdd(existingStats.totalFgAttempted, playerData.fgAttempted),
+           totalThreeMade: safeAdd(existingStats.totalThreeMade, playerData.threeMade),
+           totalThreeAttempted: safeAdd(existingStats.totalThreeAttempted, playerData.threeAttempted),
+           totalFtMade: safeAdd(existingStats.totalFtMade, playerData.ftMade),
+           totalFtAttempted: safeAdd(existingStats.totalFtAttempted, playerData.ftAttempted),
+           avgPoints: 0, // Will be calculated below
+           avgRebounds: 0, // Will be calculated below
+           avgAssists: 0, // Will be calculated below
+           avgSteals: 0, // Will be calculated below
+           avgBlocks: 0, // Will be calculated below
+           avgTurnovers: 0, // Will be calculated below
+           avgFouls: 0, // Will be calculated below
+           avgFgPercentage: 0, // Will be calculated below
+           avgThreePercentage: 0, // Will be calculated below
+           avgFtPercentage: 0, // Will be calculated below
+           avgPlusMinus: 0, // Add missing field
+         };
         
         // Calculate new averages
         const newGamesPlayed = updatedStats.gamesPlayed;
@@ -468,7 +476,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
 
     console.log('🔍 Received save request body:', JSON.stringify(req.body, null, 2));
     
-    const { gameData, playersData, imageUrl } = req.body;
+    const { gameData, playersData, imageUrl, originalFileName } = req.body;
 
     if (!gameData || !playersData || !imageUrl) {
       console.log('❌ Missing required data:', {
@@ -489,6 +497,22 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
 
     // Use the existing Supabase URL instead of re-uploading
     console.log('🔍 Using existing image URL for save:', imageUrl);
+    console.log('🔍 Original filename for gameIdFromFile:', originalFileName);
+
+    // Check if a game with this image URL already exists to prevent duplicates
+    const existingGame = await supabaseService.getGameByScreenshotUrl(imageUrl, req.user.userId);
+    if (existingGame) {
+      console.log('⚠️ Game with this screenshot already exists, returning existing game data');
+      const response: ApiResponse<{ game: any; players: any[] }> = {
+        success: true,
+        data: {
+          game: existingGame,
+          players: await supabaseService.getGamesByUserId(req.user.userId),
+        },
+        message: 'Game already exists in database',
+      };
+      return res.status(200).json(response);
+    }
 
     // Create game record
     const game = await supabaseService.createGame({
@@ -502,41 +526,96 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       userId: req.user.userId,
     });
 
-    // Extract image number from the image URL for gameIdFromFile
-    // The imageUrl is a Supabase URL, so we need to extract the filename from it
-    const urlParts = imageUrl.split('/');
-    const fileName = urlParts[urlParts.length - 1]; // Get the last part of the URL (filename)
-    const playerImageNumber = extractImageNumber(fileName);
-    console.log(`🔍 Extracted image number for gameIdFromFile: ${playerImageNumber} from filename: ${fileName}`);
+    // Extract image number from the original filename for gameIdFromFile
+    const playerImageNumber = extractImageNumber(originalFileName);
+    console.log(`🔍 Extracted image number for gameIdFromFile: ${playerImageNumber} from original filename: ${originalFileName}`);
     
     // Debug: Log the first player data to see what we're working with
     if (playersData.length > 0) {
       console.log('🔍 Sample player data structure:', JSON.stringify(playersData[0], null, 2));
+      console.log('🔍 Sample player shooting data:', {
+        name: playersData[0].name,
+        fgMade: playersData[0].fgMade,
+        fgAttempted: playersData[0].fgAttempted,
+        threeMade: playersData[0].threeMade,
+        threeAttempted: playersData[0].threeAttempted,
+        ftMade: playersData[0].ftMade,
+        ftAttempted: playersData[0].ftAttempted,
+        types: {
+          fgMade: typeof playersData[0].fgMade,
+          fgAttempted: typeof playersData[0].fgAttempted,
+          threeMade: typeof playersData[0].threeMade,
+          threeAttempted: typeof playersData[0].threeAttempted,
+          ftMade: typeof playersData[0].ftMade,
+          ftAttempted: typeof playersData[0].ftAttempted
+        }
+      });
     }
 
     // Create player records
-    const playerPromises = playersData.map((playerData: any) => {
+    const playerPromises = playersData.map((playerData: any, index: number) => {
+      // Extract player number from the player ID (e.g., "IMG_0312_1_A" -> "1")
+      const playerNumMatch = playerData.id?.match(/_(\d+)_/);
+      const playerNumber = playerNumMatch ? playerNumMatch[1] : (index + 1).toString();
+      
+      // Create playerId in format: gameIdFromFile_P# (e.g., "0312_P1")
+      const playerId = `${playerImageNumber}_P${playerNumber}`;
+      
+      // Map position based on player number
+      const getPositionFromPlayerNumber = (playerNum: string): string => {
+        const num = parseInt(playerNum);
+        if (num === 0 || num === 5) return 'PG';
+        if (num === 1 || num === 6) return 'SG';
+        if (num === 2 || num === 7) return 'SF';
+        if (num === 3 || num === 8) return 'PF';
+        if (num === 4 || num === 9) return 'C';
+        return 'Unknown';
+      };
+      
+      const position = getPositionFromPlayerNumber(playerNumber);
+      
       console.log(`🔍 Player data for database:`, {
         id: playerData.id,
         name: playerData.name,
         team: playerData.team,
-        position: playerData.position,
+        position: position,
         teammateGrade: playerData.teammateGrade,
-        playerId: playerData.playerId
+        playerId: playerId,
+        playerNumber: playerNumber,
+        gameIdFromFile: playerImageNumber
       });
       
-      // Calculate shooting percentages
-      const fgPercentage = playerData.fgAttempted && playerData.fgAttempted > 0 
-        ? Math.round((playerData.fgMade / playerData.fgAttempted) * 100 * 100) / 100 
+      console.log(`🔍 Teammate grade debug for ${playerData.name}:`, {
+        received: playerData.teammateGrade,
+        final: playerData.teammateGrade || 'N/A'
+      });
+      
+      // Calculate shooting percentages with proper type conversion
+      const fgMade = Number(playerData.fgMade) || 0;
+      const fgAttempted = Number(playerData.fgAttempted) || 0;
+      const threeMade = Number(playerData.threeMade) || 0;
+      const threeAttempted = Number(playerData.threeAttempted) || 0;
+      const ftMade = Number(playerData.ftMade) || 0;
+      const ftAttempted = Number(playerData.ftAttempted) || 0;
+      
+      const fgPercentage = fgAttempted > 0 
+        ? Math.round((fgMade / fgAttempted) * 100 * 100) / 100 
         : 0.00;
       
-      const threePercentage = playerData.threeAttempted && playerData.threeAttempted > 0 
-        ? Math.round((playerData.threeMade / playerData.threeAttempted) * 100 * 100) / 100 
+      const threePercentage = threeAttempted > 0 
+        ? Math.round((threeMade / threeAttempted) * 100 * 100) / 100 
         : 0.00;
       
-      const ftPercentage = playerData.ftAttempted && playerData.ftAttempted > 0 
-        ? Math.round((playerData.ftMade / playerData.ftAttempted) * 100 * 100) / 100 
+      const ftPercentage = ftAttempted > 0 
+        ? Math.round((ftMade / ftAttempted) * 100 * 100) / 100 
         : 0.00;
+      
+      // Debug shooting percentage calculations
+      console.log(`🔍 Shooting percentages for ${playerData.name}:`, {
+        fg: { made: fgMade, attempted: fgAttempted, calculated: fgPercentage, original: { made: playerData.fgMade, attempted: playerData.fgAttempted } },
+        three: { made: threeMade, attempted: threeAttempted, calculated: threePercentage, original: { made: playerData.threeMade, attempted: playerData.threeAttempted } },
+        ft: { made: ftMade, attempted: ftAttempted, calculated: ftPercentage, original: { made: playerData.ftMade, attempted: playerData.ftAttempted } }
+      });
       
       return supabaseService.createPlayer({
         id: playerData.id || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -544,8 +623,8 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
         team: playerData.team || 'Unknown Team',
         teammateGrade: playerData.teammateGrade || 'N/A',
         gameIdFromFile: playerImageNumber,
-        playerId: playerData.playerId || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        position: playerData.position || 'Unknown',
+        playerId: playerId,
+        position: position,
         points: playerData.points || 0,
         rebounds: playerData.rebounds || 0,
         assists: playerData.assists || 0,
@@ -631,7 +710,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     };
 
     // Create team records with image number format IDs
-    const imageNumber = gameData.imageNumber || extractImageNumber(req.body.originalFileName);
+    const imageNumber = playerImageNumber;
     
     console.log('🔍 Creating teams with image number:', imageNumber);
     console.log('🔍 Home team data:', { name: gameData.homeTeam, score: gameData.homeScore });
@@ -661,29 +740,29 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       userId: req.user!.userId,
     };
     
-    const awayTeamData = {
-      id: `team_${imageNumber}_away_${Math.random().toString(36).substr(2, 5)}`,
-      name: gameData.awayTeam,
-      isHome: false,
-      points: gameData.awayScore,
-      rebounds: awayTeamTotals.rebounds || 0,
-      assists: awayTeamTotals.assists || 0,
-      steals: awayTeamTotals.steals || 0,
-      blocks: awayTeamTotals.blocks || 0,
-      turnovers: awayTeamTotals.turnovers || 0,
-      fouls: awayTeamTotals.fouls || 0,
-      fgMade: awayTeamTotals.fgMade || 0,
-      fgAttempted: awayTeamTotals.fgAttempted || 0,
-      threeMade: awayTeamTotals.threeMade || 0,
-      threeAttempted: awayTeamTotals.threeAttempted || 0,
-      ftMade: awayTeamTotals.ftMade || 0,
-      ftAttempted: awayTeamTotals.ftAttempted || 0,
-      fg_percentage: awayTeamPercentages.fg_percentage || 0.00,
-      three_percentage: awayTeamPercentages.three_percentage || 0.00,
-      ft_percentage: awayTeamPercentages.ft_percentage || 0.00,
-      gameId: game.id,
-      userId: req.user!.userId,
-    };
+         const awayTeamData = {
+       id: `team_${imageNumber}_away_${Math.random().toString(36).substr(2, 5)}`,
+       name: gameData.awayTeam,
+       isHome: false,
+       points: gameData.awayScore,
+       rebounds: awayTeamTotals.rebounds || 0,
+       assists: awayTeamTotals.assists || 0,
+       steals: awayTeamTotals.steals || 0,
+       blocks: awayTeamTotals.blocks || 0,
+       turnovers: awayTeamTotals.turnovers || 0,
+       fouls: awayTeamTotals.fouls || 0,
+       fgMade: awayTeamTotals.fgMade || 0,
+       fgAttempted: awayTeamTotals.fgAttempted || 0,
+       threeMade: awayTeamTotals.threeMade || 0,
+       threeAttempted: awayTeamTotals.threeAttempted || 0,
+       ftMade: awayTeamTotals.ftMade || 0,
+       ftAttempted: awayTeamTotals.ftAttempted || 0,
+       fg_percentage: awayTeamPercentages.fg_percentage || 0.00,
+       three_percentage: awayTeamPercentages.three_percentage || 0.00,
+       ft_percentage: awayTeamPercentages.ft_percentage || 0.00,
+       gameId: game.id,
+       userId: req.user!.userId,
+     };
 
     console.log('🔍 About to create teams in database...');
     console.log('🔍 Home team data for DB:', homeTeamData);
@@ -698,10 +777,10 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     await Promise.all(teamPromises);
     console.log('✅ Teams created successfully in database');
 
-    // Helper function to update player stats in the player_stats table
+    // Helper function to update player_totals table only (skip player_stats)
     async function updatePlayerStats(gameId: string, playersData: any[], userId: string) {
       try {
-        console.log('🔄 Updating player stats for game:', gameId);
+        console.log('🔄 Updating player totals for game:', gameId);
         
         for (const playerData of playersData) {
           // Skip players with non-allowed names
@@ -710,118 +789,125 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
             continue;
           }
           
-          // Get existing player stats or create new
-          const existingStats = await supabaseService.getPlayerStatsByPlayerName(playerData.name, userId);
-          
-          if (existingStats) {
-            // Update existing stats
-            console.log(`📊 Updating stats for existing player: ${playerData.name}`);
-            
-            const updatedStats = {
-              gamesPlayed: existingStats.gamesPlayed + 1,
-              totalPoints: existingStats.totalPoints + (playerData.points || 0),
-              totalRebounds: existingStats.totalRebounds + (playerData.rebounds || 0),
-              totalAssists: existingStats.totalAssists + (playerData.assists || 0),
-              totalSteals: existingStats.totalSteals + (playerData.steals || 0),
-              totalBlocks: existingStats.totalBlocks + (playerData.blocks || 0),
-              totalTurnovers: existingStats.totalTurnovers + (playerData.turnovers || 0),
-              totalFouls: existingStats.totalFouls + (playerData.fouls || 0),
-              totalFgMade: existingStats.totalFgMade + (playerData.fgMade || 0),
-              totalFgAttempted: existingStats.totalFgAttempted + (playerData.fgAttempted || 0),
-              totalThreeMade: existingStats.totalThreeMade + (playerData.threeMade || 0),
-              totalThreeAttempted: existingStats.totalThreeAttempted + (playerData.threeAttempted || 0),
-              totalFtMade: existingStats.totalFtMade + (playerData.ftMade || 0),
-              totalFtAttempted: existingStats.totalFtAttempted + (playerData.ftAttempted || 0),
-              avgPoints: 0, // Will be calculated below
-              avgRebounds: 0, // Will be calculated below
-              avgAssists: 0, // Will be calculated below
-              avgSteals: 0, // Will be calculated below
-              avgBlocks: 0, // Will be calculated below
-              avgTurnovers: 0, // Will be calculated below
-              avgFouls: 0, // Will be calculated below
-              avgFgPercentage: 0, // Will be calculated below
-              avgThreePercentage: 0, // Will be calculated below
-              avgFtPercentage: 0, // Will be calculated below
-            };
-            
-            // Calculate new averages
-            const newGamesPlayed = updatedStats.gamesPlayed;
-            updatedStats.avgPoints = updatedStats.totalPoints / newGamesPlayed;
-            updatedStats.avgRebounds = updatedStats.totalRebounds / newGamesPlayed;
-            updatedStats.avgAssists = updatedStats.totalAssists / newGamesPlayed;
-            updatedStats.avgSteals = updatedStats.totalSteals / newGamesPlayed;
-            updatedStats.avgBlocks = updatedStats.totalBlocks / newGamesPlayed;
-            updatedStats.avgTurnovers = updatedStats.totalTurnovers / newGamesPlayed;
-            updatedStats.avgFouls = updatedStats.totalFouls / newGamesPlayed;
-            
-            // Calculate shooting percentages
-            updatedStats.avgFgPercentage = updatedStats.totalFgAttempted > 0 
-              ? Math.round((updatedStats.totalFgMade / updatedStats.totalFgAttempted) * 100 * 100) / 100 
-              : 0.00;
-            updatedStats.avgThreePercentage = updatedStats.totalThreeAttempted > 0 
-              ? Math.round((updatedStats.totalThreeMade / updatedStats.totalThreeAttempted) * 100 * 100) / 100 
-              : 0.00;
-            updatedStats.avgFtPercentage = updatedStats.totalFtAttempted > 0 
-              ? Math.round((updatedStats.totalFtMade / updatedStats.totalFtAttempted) * 100 * 100) / 100 
-              : 0.00;
-            
-            await supabaseService.updatePlayerStats(playerData.name, userId, updatedStats);
-            console.log(`✅ Updated stats for ${playerData.name}: ${updatedStats.gamesPlayed} games, ${updatedStats.totalPoints} total points`);
-            
-          } else {
-            // Create new player stats
-            console.log(`🆕 Creating new stats for player: ${playerData.name}`);
-            
-            const newStats = {
-              id: `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-              playerName: playerData.name,
-              team: playerData.team,
-              gamesPlayed: 1,
-              avgPoints: playerData.points || 0,
-              avgRebounds: playerData.rebounds || 0,
-              avgAssists: playerData.assists || 0,
-              avgSteals: playerData.steals || 0,
-              avgBlocks: playerData.blocks || 0,
-              avgTurnovers: playerData.turnovers || 0,
-              avgFouls: playerData.fouls || 0,
-              avgFgPercentage: playerData.fgAttempted && playerData.fgAttempted > 0 
-                ? Math.round((playerData.fgMade / playerData.fgAttempted) * 100 * 100) / 100 
-                : 0.00,
-              avgThreePercentage: playerData.threeAttempted && playerData.threeAttempted > 0 
-                ? Math.round((playerData.threeMade / playerData.threeAttempted) * 100 * 100) / 100 
-                : 0.00,
-              avgFtPercentage: playerData.ftAttempted && playerData.ftAttempted > 0 
-                ? Math.round((playerData.ftMade / playerData.ftAttempted) * 100 * 100) / 100 
-                : 0.00,
-              totalPoints: playerData.points || 0,
-              totalRebounds: playerData.rebounds || 0,
-              totalAssists: playerData.assists || 0,
-              totalSteals: playerData.steals || 0,
-              totalBlocks: playerData.blocks || 0,
-              totalTurnovers: playerData.turnovers || 0,
-              totalFouls: playerData.fouls || 0,
-              totalFgMade: playerData.fgMade || 0,
-              totalFgAttempted: playerData.fgAttempted || 0,
-              totalThreeMade: playerData.threeMade || 0,
-              totalThreeAttempted: playerData.threeAttempted || 0,
-              totalFtMade: playerData.ftMade || 0,
-              totalFtAttempted: playerData.ftAttempted || 0,
-              userId: userId,
-            };
-            
-            await supabaseService.createPlayerStats(newStats);
-            console.log(`✅ Created new stats for ${playerData.name}: ${newStats.totalPoints} points`);
-          }
+          // Update player_totals table only
+          await updatePlayerTotals(playerData, userId);
         }
         
-        console.log('✅ Player stats updated successfully for game:', gameId);
+        console.log('✅ Player totals updated successfully for game:', gameId);
       } catch (error) {
-        console.error('❌ Error updating player stats:', error);
-        // Don't throw error - we don't want to fail the game save if stats update fails
+        console.error('❌ Error updating player totals:', error);
+        // Don't throw error - we don't want to fail the game save if totals update fails
+      }
+    }
+    
+    // Helper function to update player_totals table
+    async function updatePlayerTotals(playerData: any, userId: string) {
+      try {
+        console.log(`🔄 Updating player totals for: ${playerData.name}`);
+        
+        // Get existing player totals or create new
+        const existingTotals = await supabaseService.getPlayerTotalsByPlayerName(playerData.name, userId);
+        
+        if (existingTotals) {
+          // Update existing totals
+          console.log(`📊 Updating totals for existing player: ${playerData.name}`);
+          
+          // Helper function to safely add numbers and handle NaN
+          const safeAdd = (a: number, b: number) => {
+            const aVal = isNaN(a) ? 0 : (a || 0);
+            const bVal = isNaN(b) ? 0 : (b || 0);
+            return aVal + bVal;
+          };
+
+          const updatedTotals: any = {
+            total_games: existingTotals.total_games + 1,
+            total_points: safeAdd(existingTotals.total_points, playerData.points),
+            total_assists: safeAdd(existingTotals.total_assists, playerData.assists),
+            total_rebounds: safeAdd(existingTotals.total_rebounds, playerData.rebounds),
+            total_steals: safeAdd(existingTotals.total_steals, playerData.steals),
+            total_blocks: safeAdd(existingTotals.total_blocks, playerData.blocks),
+            total_fouls: safeAdd(existingTotals.total_fouls, playerData.fouls),
+            total_turnovers: safeAdd(existingTotals.total_turnovers, playerData.turnovers),
+            total_fgm: safeAdd(existingTotals.total_fgm, playerData.fgMade),
+            total_fga: safeAdd(existingTotals.total_fga, playerData.fgAttempted),
+            total_3pm: safeAdd(existingTotals.total_3pm, playerData.threeMade),
+            total_3pa: safeAdd(existingTotals.total_3pa, playerData.threeAttempted),
+            total_ftm: safeAdd(existingTotals.total_ftm, playerData.ftMade),
+            total_fta: safeAdd(existingTotals.total_fta, playerData.ftAttempted),
+            fg_percentage: 0.00,
+            three_percentage: 0.00,
+            ft_percentage: 0.00,
+          };
+          
+          // Calculate new percentages
+          updatedTotals.fg_percentage = updatedTotals.total_fga > 0 
+            ? Math.round((updatedTotals.total_fgm / updatedTotals.total_fga) * 100 * 100) / 100 
+            : 0.00;
+          updatedTotals.three_percentage = updatedTotals.total_3pa > 0 
+            ? Math.round((updatedTotals.total_3pm / updatedTotals.total_3pa) * 100 * 100) / 100 
+            : 0.00;
+          updatedTotals.ft_percentage = updatedTotals.total_fta > 0 
+            ? Math.round((updatedTotals.total_ftm / updatedTotals.total_fta) * 100 * 100) / 100 
+            : 0.00;
+          
+          await supabaseService.updatePlayerTotals(playerData.name, userId, updatedTotals);
+          console.log(`✅ Updated totals for ${playerData.name}: ${updatedTotals.total_games} games, ${updatedTotals.total_points} total points`);
+          
+        } else {
+          // Create new player totals
+          console.log(`🆕 Creating new totals for player: ${playerData.name}`);
+          
+                     // Helper function to safely get number values and handle NaN
+           const safeNumber = (value: any) => {
+             const num = Number(value);
+             return isNaN(num) ? 0 : num;
+           };
+
+           const newTotals = {
+             id: `total_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+             player_id: playerData.id ? `${playerImageNumber}_P${playerData.id.match(/_(\d+)_/)?.[1] || '1'}` : `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+             player_name: playerData.name,
+             team: playerData.team,
+             total_games: 1,
+             total_points: safeNumber(playerData.points),
+             total_assists: safeNumber(playerData.assists),
+             total_rebounds: safeNumber(playerData.rebounds),
+             total_steals: safeNumber(playerData.steals),
+             total_blocks: safeNumber(playerData.blocks),
+             total_fouls: safeNumber(playerData.fouls),
+             total_turnovers: safeNumber(playerData.turnovers),
+             total_fgm: safeNumber(playerData.fgMade),
+             total_fga: safeNumber(playerData.fgAttempted),
+             total_3pm: safeNumber(playerData.threeMade),
+             total_3pa: safeNumber(playerData.threeAttempted),
+             total_ftm: safeNumber(playerData.ftMade),
+             total_fta: safeNumber(playerData.ftAttempted),
+             fg_percentage: playerData.fgAttempted && playerData.fgAttempted > 0 
+               ? Math.round((safeNumber(playerData.fgMade) / safeNumber(playerData.fgAttempted)) * 100 * 100) / 100 
+               : 0.00,
+             three_percentage: playerData.threeAttempted && playerData.threeAttempted > 0 
+               ? Math.round((safeNumber(playerData.threeMade) / safeNumber(playerData.threeAttempted)) * 100 * 100) / 100 
+               : 0.00,
+             ft_percentage: playerData.ftAttempted && playerData.ftAttempted > 0 
+               ? Math.round((safeNumber(playerData.ftMade) / safeNumber(playerData.ftAttempted)) * 100 * 100) / 100 
+               : 0.00,
+             userid: userId,
+           };
+          
+          await supabaseService.createPlayerTotals(newTotals);
+          console.log(`✅ Created new totals for ${playerData.name}: 1 game, ${newTotals.total_points} total points`);
+        }
+        
+      } catch (error) {
+        console.error(`❌ Error updating player totals for ${playerData.name}:`, error);
+        // Don't throw error - we don't want to fail the game save if totals update fails
       }
     }
 
     await updatePlayerStats(game.id, playersData, req.user.userId);
+
+    // Update player_stats table with averages from player_totals
+    await supabaseService.updatePlayerStatsFromTotals(req.user.userId);
 
     const response: ApiResponse<{ game: Game; players: Player[] }> = {
       success: true,

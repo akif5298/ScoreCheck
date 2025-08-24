@@ -195,9 +195,10 @@ export class SupabaseService {
         INSERT INTO players (
           id, "gameId", name, team, position, points, rebounds, assists, steals, blocks,
           turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
-          "ftMade", "ftAttempted", "teammateGrade", "playerId", "gameIdFromFile", "createdAt", "updatedAt", "userId"
+          "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage",
+          "teammateGrade", "playerId", "gameIdFromFile", "createdAt", "updatedAt", "userId"
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), NOW(), $22)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), NOW(), $25)
         RETURNING *
       `;
       const values = [
@@ -219,11 +220,29 @@ export class SupabaseService {
         playerData.threeAttempted || 0,
         playerData.ftMade || 0,
         playerData.ftAttempted || 0,
+        playerData.fg_percentage || 0.00,
+        playerData.three_percentage || 0.00,
+        playerData.ft_percentage || 0.00,
         playerData.teammateGrade || null,
         playerData.playerId || null,
         playerData.gameIdFromFile || null,
         playerData.userId
       ];
+      
+      // Debug: Log the shooting percentage data being inserted
+      console.log(`🔍 Creating player ${playerData.name} with shooting percentages:`, {
+        fg_percentage: playerData.fg_percentage,
+        three_percentage: playerData.three_percentage,
+        ft_percentage: playerData.ft_percentage,
+        raw_data: {
+          fgMade: playerData.fgMade,
+          fgAttempted: playerData.fgAttempted,
+          threeMade: playerData.threeMade,
+          threeAttempted: playerData.threeAttempted,
+          ftMade: playerData.ftMade,
+          ftAttempted: playerData.ftAttempted
+        }
+      });
       
       const result = await pgClient.query(query, values);
       return result.rows[0];
@@ -389,12 +408,12 @@ export class SupabaseService {
         updateData.totalBlocks,
         updateData.totalTurnovers,
         updateData.totalFouls,
-                 updateData.fgMade,
-         updateData.fgAttempted,
-         updateData.threeMade,
-         updateData.threeAttempted,
-         updateData.ftMade,
-         updateData.ftAttempted,
+        updateData.totalFgMade,
+        updateData.totalFgAttempted,
+        updateData.totalThreeMade,
+        updateData.totalThreeAttempted,
+        updateData.totalFtMade,
+        updateData.totalFtAttempted,
         playerName,
         userId
       ];
@@ -461,6 +480,297 @@ export class SupabaseService {
     } catch (error) {
       console.error('Error getting dashboard stats:', error);
       return { total_games: 0, total_players: 0, total_teams: 0 };
+    }
+  }
+
+  async getGameByScreenshotUrl(screenshotUrl: string, userId: string) {
+    try {
+      const query = `
+        SELECT * FROM games 
+        WHERE "screenshotUrl" = $1 AND "userId" = $2
+        ORDER BY "createdAt" DESC
+        LIMIT 1
+      `;
+      
+      const result = await pgClient.query(query, [screenshotUrl, userId]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error getting game by screenshot URL:', error);
+      return null;
+    }
+  }
+
+  // Player Totals Methods
+  async getPlayerTotalsByPlayerName(playerName: string, userId: string) {
+    try {
+      const query = `
+        SELECT * FROM player_totals 
+        WHERE player_name = $1 AND userid = $2
+      `;
+      
+      const result = await pgClient.query(query, [playerName, userId]);
+      return result.rows[0] || null;
+    } catch (error) {
+      console.error('Error getting player totals by name:', error);
+      return null;
+    }
+  }
+
+  async getPlayerTotalsByUserId(userId: string) {
+    try {
+      const query = `
+        SELECT * FROM player_totals 
+        WHERE userid = $1
+        ORDER BY player_name
+      `;
+      
+      const result = await pgClient.query(query, [userId]);
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting player totals by user ID:', error);
+      return [];
+    }
+  }
+
+  async updatePlayerTotals(playerName: string, userId: string, updateData: any) {
+    try {
+      const query = `
+        UPDATE player_totals 
+        SET 
+          total_games = $1,
+          total_points = $2,
+          total_assists = $3,
+          total_rebounds = $4,
+          total_steals = $5,
+          total_blocks = $6,
+          total_fouls = $7,
+          total_turnovers = $8,
+          total_fgm = $9,
+          total_fga = $10,
+          total_3pm = $11,
+          total_3pa = $12,
+          total_ftm = $13,
+          total_fta = $14,
+          fg_percentage = $15,
+          three_percentage = $16,
+          ft_percentage = $17,
+          updatedat = NOW()
+        WHERE player_name = $18 AND userid = $19
+        RETURNING *
+      `;
+      
+      const values = [
+        updateData.total_games,
+        updateData.total_points,
+        updateData.total_assists,
+        updateData.total_rebounds,
+        updateData.total_steals,
+        updateData.total_blocks,
+        updateData.total_fouls,
+        updateData.total_turnovers,
+        updateData.total_fgm,
+        updateData.total_fga,
+        updateData.total_3pm,
+        updateData.total_3pa,
+        updateData.total_ftm,
+        updateData.total_fta,
+        updateData.fg_percentage,
+        updateData.three_percentage,
+        updateData.ft_percentage,
+        playerName,
+        userId
+      ];
+      
+      const result = await pgClient.query(query, values);
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating player totals:', error);
+      throw error;
+    }
+  }
+
+  async createPlayerTotals(totalsData: any) {
+    try {
+      const query = `
+        INSERT INTO player_totals (
+          id, player_id, player_name, team, total_games, total_points, total_assists,
+          total_rebounds, total_steals, total_blocks, total_fouls, total_turnovers,
+          total_fgm, total_fga, total_3pm, total_3pa, total_ftm, total_fta,
+          fg_percentage, three_percentage, ft_percentage, createdat, updatedat, userid
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), NOW(), $22)
+        RETURNING *
+      `;
+      const values = [
+        totalsData.id,
+        totalsData.player_id,
+        totalsData.player_name,
+        totalsData.team,
+        totalsData.total_games || 1,
+        totalsData.total_points || 0,
+        totalsData.total_assists || 0,
+        totalsData.total_rebounds || 0,
+        totalsData.total_steals || 0,
+        totalsData.total_blocks || 0,
+        totalsData.total_fouls || 0,
+        totalsData.total_turnovers || 0,
+        totalsData.total_fgm || 0,
+        totalsData.total_fga || 0,
+        totalsData.total_3pm || 0,
+        totalsData.total_3pa || 0,
+        totalsData.total_ftm || 0,
+        totalsData.total_fta || 0,
+        totalsData.fg_percentage || 0.00,
+        totalsData.three_percentage || 0.00,
+        totalsData.ft_percentage || 0.00,
+        totalsData.userid
+      ];
+      
+      const result = await pgClient.query(query, values);
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error creating player totals:', error);
+      throw error;
+    }
+  }
+
+  async updatePlayerStatsFromTotals(userId: string) {
+    try {
+      console.log('🔄 Running bulk update of player_stats with averages from player_totals for user:', userId);
+      
+      const query = `
+        INSERT INTO public.player_stats (
+          id,
+          "playerName",
+          team,
+          "gamesPlayed",
+          "avgPoints",
+          "avgRebounds",
+          "avgAssists",
+          "avgSteals",
+          "avgBlocks",
+          "avgTurnovers",
+          "avgFouls",
+          "avgFgPercentage",
+          "avgThreePercentage",
+          "avgFtPercentage",
+          "avgPlusMinus",
+          "totalPoints",
+          "totalRebounds",
+          "totalAssists",
+          "totalSteals",
+          "totalBlocks",
+          "totalTurnovers",
+          "totalFouls",
+          "createdAt",
+          "updatedAt",
+          "userId",
+          "totalfgmade",
+          "totalfgattempted",
+          "totalthreemade",
+          "totalthreeattempted",
+          "totalftmade",
+          "totalftattempted"
+        )
+        SELECT 
+          gen_random_uuid()::text as id,
+          pt.player_name as "playerName",
+          pt.team,
+          pt.total_games as "gamesPlayed",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_points::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgPoints",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_rebounds::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgRebounds",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_assists::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgAssists",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_steals::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgSteals",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_blocks::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgBlocks",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_turnovers::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgTurnovers",
+          CASE 
+            WHEN pt.total_games > 0 THEN 
+              ROUND((pt.total_fouls::numeric / pt.total_games), 2)
+            ELSE 0.00 
+          END as "avgFouls",
+          pt.fg_percentage as "avgFgPercentage",
+          pt.three_percentage as "avgThreePercentage",
+          pt.ft_percentage as "avgFtPercentage",
+          0.00 as "avgPlusMinus",
+          pt.total_points as "totalPoints",
+          pt.total_rebounds as "totalRebounds",
+          pt.total_assists as "totalAssists",
+          pt.total_steals as "totalSteals",
+          pt.total_blocks as "totalBlocks",
+          pt.total_turnovers as "totalTurnovers",
+          pt.total_fouls as "totalFouls",
+          CURRENT_TIMESTAMP as "createdAt",
+          CURRENT_TIMESTAMP as "updatedAt",
+          pt.userid as "userId",
+          pt.total_fgm as "totalfgmade",
+          pt.total_fga as "totalfgattempted",
+          pt.total_3pm as "totalthreemade",
+          pt.total_3pa as "totalthreeattempted",
+          pt.total_ftm as "totalftmade",
+          pt.total_fta as "totalftattempted"
+        FROM public.player_totals pt
+        WHERE pt.player_name IN ('Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif')
+        AND pt.userid = $1
+        ON CONFLICT ("playerName", "userId") 
+        DO UPDATE SET
+          team = EXCLUDED.team,
+          "gamesPlayed" = EXCLUDED."gamesPlayed",
+          "avgPoints" = EXCLUDED."avgPoints",
+          "avgRebounds" = EXCLUDED."avgRebounds",
+          "avgAssists" = EXCLUDED."avgAssists",
+          "avgSteals" = EXCLUDED."avgSteals",
+          "avgBlocks" = EXCLUDED."avgBlocks",
+          "avgTurnovers" = EXCLUDED."avgTurnovers",
+          "avgFouls" = EXCLUDED."avgFouls",
+          "avgFgPercentage" = EXCLUDED."avgFgPercentage",
+          "avgThreePercentage" = EXCLUDED."avgThreePercentage",
+          "avgFtPercentage" = EXCLUDED."avgFtPercentage",
+          "totalPoints" = EXCLUDED."totalPoints",
+          "totalRebounds" = EXCLUDED."totalRebounds",
+          "totalAssists" = EXCLUDED."totalAssists",
+          "totalSteals" = EXCLUDED."totalSteals",
+          "totalBlocks" = EXCLUDED."totalBlocks",
+          "totalTurnovers" = EXCLUDED."totalTurnovers",
+          "totalFouls" = EXCLUDED."totalFouls",
+          "totalfgmade" = EXCLUDED."totalfgmade",
+          "totalfgattempted" = EXCLUDED."totalfgattempted",
+          "totalthreemade" = EXCLUDED."totalthreemade",
+          "totalthreeattempted" = EXCLUDED."totalthreeattempted",
+          "totalftmade" = EXCLUDED."totalftmade",
+          "totalftattempted" = EXCLUDED."totalftattempted",
+          "updatedAt" = CURRENT_TIMESTAMP
+      `;
+      
+      const result = await pgClient.query(query, [userId]);
+      console.log(`✅ Bulk update of player_stats completed. Rows affected: ${result.rowCount}`);
+      return result;
+    } catch (error) {
+      console.error('Error running bulk update of player_stats from player_totals:', error);
+      throw error;
     }
   }
 }

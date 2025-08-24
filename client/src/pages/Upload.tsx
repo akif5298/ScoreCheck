@@ -3,6 +3,7 @@ import { useDropzone } from 'react-dropzone';
 import { CloudArrowUpIcon } from '@heroicons/react/24/outline';
 import ReviewStats from '../components/ReviewStats';
 import PlayerNameAssignment from '../components/PlayerNameAssignment';
+import toast from 'react-hot-toast';
 
 // Interface for PlayerNameAssignment component
 interface PlayerNameAssignmentPlayerStats {
@@ -123,6 +124,7 @@ const Upload: React.FC = () => {
     processingComplete: false
   });
   const [isMultipleMode, setIsMultipleMode] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Debug: Monitor processedGame state changes
   useEffect(() => {
@@ -362,18 +364,16 @@ const Upload: React.FC = () => {
     return converted;
   };
 
-  const handleSaveGame = async () => {
+  const handleSaveGame = async (gameData: any, playersData: any, fileName: string) => {
+    if (isSaving) {
+      console.log('🔄 Save already in progress, ignoring duplicate request');
+      return;
+    }
+
+    console.log('🎯 handleSaveGame called with data:', { gameData, playersData, fileName });
+
+    setIsSaving(true);
     try {
-      const gameData = {
-        homeTeam: processedGame?.extractedData.homeTeam || 'Team A',
-        awayTeam: processedGame?.extractedData.awayTeam || 'Team B',
-        homeScore: processedGame?.extractedData.homeScore || 0,
-        awayScore: processedGame?.extractedData.awayScore || 0,
-        date: new Date().toISOString().split('T')[0],
-      };
-
-      const playersData = processedGame?.extractedData.players || [];
-
       const response = await fetch('/api/screenshots/save', {
         method: 'POST',
         headers: {
@@ -384,26 +384,28 @@ const Upload: React.FC = () => {
           gameData,
           playersData,
           imageUrl: processedGame?.imageUrl,
+          originalFileName: fileName,
         }),
       });
 
       if (response.ok) {
-        if (isMultipleMode) {
-          // Handle continuous flow for multiple files
-          handleNextFileInQueue();
-        } else {
-          // Single file mode - reset completely
+        const result = await response.json();
+        if (result.success) {
+          toast.success('Game saved successfully!');
           setProcessedGame(null);
           setShowPlayerAssignment(false);
-          alert('Game saved successfully!');
+        } else {
+          toast.error(result.message || 'Failed to save game');
         }
       } else {
         const errorData = await response.json();
-        alert(`Failed to save game: ${errorData.error}`);
+        toast.error(`Failed to save game: ${errorData.error}`);
       }
     } catch (error) {
-      console.error('Save error:', error);
-      alert('Failed to save game');
+      console.error('Error saving game:', error);
+      toast.error('Failed to save game');
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -449,7 +451,8 @@ const Upload: React.FC = () => {
     } else {
       // All files completed
       console.log('🎉 All files completed!');
-      alert(`All ${multipleUploadState.files.length} games saved successfully!`);
+      // alert(`All ${multipleUploadState.files.length} games saved successfully!`);
+      console.log(`All ${multipleUploadState.files.length} games saved successfully!`);
       
       // Reset everything
       setProcessedGame(null);
@@ -512,6 +515,7 @@ const Upload: React.FC = () => {
         originalFileName={processedGame.fileName}
         onBack={handleBack}
         onSave={handleSaveGame}
+        isSaving={isSaving}
       />
     );
   }

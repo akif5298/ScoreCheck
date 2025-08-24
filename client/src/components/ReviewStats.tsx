@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { ArrowLeftIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import axios from 'axios';
 import toast from 'react-hot-toast';
 
 interface PlayerStats {
@@ -62,7 +61,8 @@ interface ReviewStatsProps {
   originalImageUrl: string;
   originalFileName: string;
   onBack: () => void;
-  onSave: () => void;
+  onSave: (gameData: any, playersData: any, fileName: string) => void;
+  isSaving?: boolean;
 }
 
 const ReviewStats: React.FC<ReviewStatsProps> = ({
@@ -71,6 +71,7 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
   originalFileName,
   onBack,
   onSave,
+  isSaving = false,
 }) => {
   const [players, setPlayers] = useState<PlayerStats[]>(extractedData.players);
   
@@ -159,7 +160,7 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
     awayScore: extractedData.teamBTotals?.points || extractedData.awayScore || 0,
     date: new Date().toISOString().split('T')[0],
   });
-  const [saving, setSaving] = useState(false);
+
   
   // Add state for team quarter totals
   const [teamAQuarters, setTeamAQuarters] = useState<{ [key: string]: number }>(
@@ -182,28 +183,6 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
       console.log('ReviewStats component unmounted');
     };
   }, [extractedData, players, gameData]); // Removed finalTeamAPlayers, finalTeamBPlayers
-
-  // Debug logging to see what data we're working with
-  useEffect(() => {
-    console.log('🔍 ReviewStats Debug - Received data:', {
-      players: players,
-      extractedData: extractedData,
-      gameData: gameData,
-      teamAQuarters: teamAQuarters,
-      teamBQuarters: teamBQuarters
-    });
-    
-    if (players.length > 0) {
-      console.log('🔍 First player sample:', {
-        id: players[0].id,
-        name: players[0].name,
-        team: players[0].team,
-        points: players[0].points,
-        rebounds: players[0].rebounds,
-        assists: players[0].assists
-      });
-    }
-  }, [players, extractedData, gameData, teamAQuarters, teamBQuarters]);
 
   // Helper function to extract player number from ID if available
   const getPlayerNum = (id?: string) => {
@@ -298,6 +277,23 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
     ftAttempted: displayHomePlayers.reduce((sum, p) => sum + p.ftAttempted, 0),
   }), [displayHomePlayers]);
 
+  // Update gameData scores when team totals change (calculated from player data)
+  useEffect(() => {
+    // Only update if current scores are 0 and we have valid player totals
+    if ((gameData.homeScore === 0 || gameData.awayScore === 0) && 
+        (homeTeamTotals.points > 0 || awayTeamTotals.points > 0)) {
+      setGameData(prev => ({
+        ...prev,
+        homeScore: homeTeamTotals.points,
+        awayScore: awayTeamTotals.points,
+      }));
+      console.log('🎯 Updated gameData scores from player totals:', { 
+        homeScore: homeTeamTotals.points, 
+        awayScore: awayTeamTotals.points 
+      });
+    }
+  }, [homeTeamTotals.points, awayTeamTotals.points, gameData.homeScore, gameData.awayScore]);
+
   // Do not overwrite server-provided custom names here
 
   const handlePlayerChange = (index: number, field: keyof PlayerStats, value: string | number) => {
@@ -317,29 +313,45 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
   };
 
   const handleSave = async () => {
-    setSaving(true);
     try {
-      const response = await axios.post('/api/screenshots/save', {
-        gameData: {
-          ...gameData,
-          teamAQuarters,
-          teamBQuarters
-        },
-        playersData: players,
-        imageUrl: originalImageUrl,
-      });
+      // Prepare the edited data to pass back to parent
+      const editedGameData = {
+        homeTeam: gameData.homeTeam,
+        awayTeam: gameData.awayTeam,
+        homeScore: gameData.homeScore,
+        awayScore: gameData.awayScore,
+        date: gameData.date,
+      };
 
-      if (response.data.success) {
-        toast.success('Box score saved successfully!');
-        onSave();
-      } else {
-        throw new Error(response.data.error || 'Save failed');
-      }
+      const editedPlayersData = players.map((player: any) => ({
+        id: player.id,
+        name: player.name,
+        team: player.team,
+        teammateGrade: player.teammateGrade,
+        points: player.points,
+        assists: player.assists,
+        rebounds: player.rebounds,
+        steals: player.steals,
+        blocks: player.blocks,
+        fouls: player.fouls,
+        turnovers: player.turnovers,
+        fgMade: player.fgMade,
+        fgAttempted: player.fgAttempted,
+        threeMade: player.threeMade,
+        threeAttempted: player.threeAttempted,
+        ftMade: player.ftMade,
+        ftAttempted: player.ftAttempted,
+        plusMinus: player.plusMinus,
+      }));
+
+      console.log('🎯 ReviewStats handleSave - edited data being sent:', { editedGameData, editedPlayersData });
+
+      // Call the parent's onSave function with the edited data
+      onSave(editedGameData, editedPlayersData, originalFileName);
+      toast.success('Box score saved successfully!');
     } catch (error: any) {
       console.error('Save error:', error);
-      toast.error(error.response?.data?.error || 'Failed to save box score');
-    } finally {
-      setSaving(false);
+      toast.error('Failed to save box score');
     }
   };
 
@@ -1072,10 +1084,10 @@ const ReviewStats: React.FC<ReviewStatsProps> = ({
         </button>
         <button
           onClick={handleSave}
-          disabled={saving}
+          disabled={isSaving}
           className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
         >
-          {saving ? (
+          {isSaving ? (
             <>
               <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
               <span>Saving...</span>

@@ -2,7 +2,19 @@
 FROM node:18-alpine
 
 # Install Python and build dependencies for native modules (canvas, sharp, etc.)
-RUN apk add --no-cache python3 make g++
+# Canvas requires: cairo, pango, pixman, pkg-config, and image libraries
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    pkgconfig \
+    cairo-dev \
+    pango-dev \
+    pixman-dev \
+    libpng-dev \
+    jpeg-dev \
+    giflib-dev \
+    librsvg-dev
 
 # Set working directory
 WORKDIR /app

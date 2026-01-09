@@ -1,12 +1,21 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 const Login: React.FC = () => {
-  const { login } = useAuth();
+  const { login, demoLogin, user } = useAuth();
+  const navigate = useNavigate();
+
+  // Redirect if user is already logged in
+  useEffect(() => {
+    if (user) {
+      navigate('/', { replace: true });
+    }
+  }, [user, navigate]);
 
   const handleAppleSignIn = async () => {
     try {
+      // COMMENTED OUT FOR DEMO - Skip Apple authentication
       // This is a placeholder for Apple Sign-In implementation
       // In a real implementation, you would integrate with Apple's Sign-In JS SDK
       // For now, we'll simulate the login process
@@ -24,18 +33,25 @@ const Login: React.FC = () => {
         },
       };
 
-      await login(
-        mockResponse.identityToken,
-        mockResponse.authorizationCode,
-        mockResponse.user
-      );
-    } catch (error) {
+      // COMMENTED OUT FOR DEMO - Original authentication call
+      // await login(
+      //   mockResponse.identityToken,
+      //   mockResponse.authorizationCode,
+      //   mockResponse.user
+      // );
+      
+      // For demo: Use demo login that bypasses authentication
+      demoLogin(mockResponse.user);
+      // Navigation will happen via useEffect when user state updates
+    } catch (error: any) {
       console.error('Apple Sign-In failed:', error);
+      // Error is already shown via toast in AuthContext
     }
   };
 
   const handleDevelopmentLogin = async () => {
     try {
+      console.log('Development login button clicked');
       // Simple development login that bypasses Apple authentication
       const mockResponse = {
         identityToken: 'dev_login_token',
@@ -49,13 +65,22 @@ const Login: React.FC = () => {
         },
       };
 
-      await login(
-        mockResponse.identityToken,
-        mockResponse.authorizationCode,
-        mockResponse.user
-      );
-    } catch (error) {
+      // COMMENTED OUT FOR DEMO - Original authentication call
+      // console.log('Calling login with:', mockResponse);
+      // await login(
+      //   mockResponse.identityToken,
+      //   mockResponse.authorizationCode,
+      //   mockResponse.user
+      // );
+      
+      // For demo: Use demo login that bypasses authentication
+      console.log('Calling demo login with:', mockResponse);
+      demoLogin(mockResponse.user);
+      console.log('Login completed successfully');
+      // Navigation will happen via useEffect when user state updates
+    } catch (error: any) {
       console.error('Development login failed:', error);
+      // Error is already shown via toast in AuthContext
     }
   };
 

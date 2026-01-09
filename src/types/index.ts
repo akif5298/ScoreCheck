@@ -179,6 +179,10 @@ export interface TeamData {
 }
 
 export interface AnalyticsData {
+  totalGames: number;
+  totalPlayers: number;
+  totalTeams: number;
+  avgPointsTeamAAndB: number;
   playerStats: PlayerStats[];
   teamStats: {
     name: string;

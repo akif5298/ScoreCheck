@@ -19,7 +19,8 @@ export class AppleAuthService {
         identityToken: authRequest.identityToken,
         isDev: process.env.NODE_ENV === 'development',
         isMockToken: authRequest.identityToken === 'mock_identity_token',
-        isDevToken: authRequest.identityToken === 'dev_login_token'
+        isDevToken: authRequest.identityToken === 'dev_login_token',
+        jwtSecret: process.env.JWT_SECRET ? 'SET' : 'MISSING'
       });
       
       // Development mode: bypass Apple verification for testing
@@ -94,6 +95,10 @@ export class AppleAuthService {
       return { user, token };
     } catch (error) {
       console.error('Apple authentication error:', error);
+      console.error('Error details:', {
+        message: error instanceof Error ? error.message : 'Unknown error',
+        stack: error instanceof Error ? error.stack : undefined
+      });
       throw new Error('Apple authentication failed');
     }
   }

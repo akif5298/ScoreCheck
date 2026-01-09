@@ -1,15 +1,18 @@
 # Use Node.js 18 Alpine as base image
 FROM node:18-alpine
 
+# Install Python and build dependencies for native modules (canvas, sharp, etc.)
+RUN apk add --no-cache python3 make g++
+
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files for root
 COPY package*.json ./
 COPY prisma ./prisma/
 
-# Install dependencies
-RUN npm ci --only=production
+# Install all dependencies (including dev dependencies for building)
+RUN npm install
 
 # Generate Prisma client
 RUN npx prisma generate
@@ -17,15 +20,21 @@ RUN npx prisma generate
 # Copy source code
 COPY . .
 
+# Build the TypeScript server
+RUN npm run build:server
+
 # Build the React client
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm ci
+RUN npm install
 COPY client/ ./
 RUN npm run build
 
 # Back to main directory
 WORKDIR /app
+
+# Remove dev dependencies to reduce image size (optional but recommended)
+RUN npm prune --production
 
 # Create uploads directory
 RUN mkdir -p uploads

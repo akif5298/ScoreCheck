@@ -3,11 +3,14 @@ FROM node:18-alpine
 
 # Install Python and build dependencies for native modules (canvas, sharp, etc.)
 # Canvas requires: cairo, pango, pixman, pkg-config, and image libraries
+# OpenSSL is required for Prisma to work correctly
 RUN apk add --no-cache \
     python3 \
     make \
     g++ \
     pkgconfig \
+    openssl \
+    openssl-dev \
     cairo-dev \
     pango-dev \
     pixman-dev \

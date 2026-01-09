@@ -15,6 +15,7 @@ interface DashboardStats {
   totalGames: number;
   totalPlayers: number;
   totalTeams: number;
+  avgPointsTeamAAndB: number;
   recentGames: any[];
   topPerformers: {
     points: any[];
@@ -51,68 +52,56 @@ const Dashboard: React.FC = () => {
       const response = await axios.get('/api/analytics/dashboard');
       if (response.data.success) {
         setStats(response.data.data);
+      } else {
+        // If API returns unsuccessful response, set empty stats
+        setStats({
+          totalGames: 0,
+          totalPlayers: 0,
+          totalTeams: 0,
+          avgPointsTeamAAndB: 0,
+          recentGames: [],
+          topPerformers: {
+            points: [],
+            rebounds: [],
+            assists: [],
+          },
+          teamStats: [],
+          playerStats: [],
+          gameHighs: {
+            points: [],
+            rebounds: [],
+            assists: [],
+            steals: [],
+            blocks: [],
+            threeMade: [],
+          },
+        });
       }
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
       toast.error('Failed to load dashboard data');
       
-      // Set mock data for demo
+      // Set empty stats on error - no mock data
       setStats({
-        totalGames: 12,
-        totalPlayers: 48,
-        totalTeams: 8,
-        recentGames: [
-          { id: '1', homeTeam: 'Lakers', awayTeam: 'Celtics', homeScore: 108, awayScore: 95, date: new Date() },
-          { id: '2', homeTeam: 'Warriors', awayTeam: 'Bulls', homeScore: 112, awayScore: 98, date: new Date() },
-        ],
+        totalGames: 0,
+        totalPlayers: 0,
+        totalTeams: 0,
+        avgPointsTeamAAndB: 0,
+        recentGames: [],
         topPerformers: {
-          points: [
-            { playerName: 'LeBron James', avgPoints: 28.5, team: 'Lakers' },
-            { playerName: 'Stephen Curry', avgPoints: 26.2, team: 'Warriors' },
-          ],
-          rebounds: [
-            { playerName: 'Anthony Davis', avgRebounds: 12.3, team: 'Lakers' },
-            { playerName: 'Draymond Green', avgRebounds: 10.8, team: 'Warriors' },
-          ],
-          assists: [
-            { playerName: 'Chris Paul', avgAssists: 9.1, team: 'Suns' },
-            { playerName: 'LeBron James', avgAssists: 8.7, team: 'Lakers' },
-          ],
+          points: [],
+          rebounds: [],
+          assists: [],
         },
-        teamStats: [
-          { name: 'Team A', avgPoints: 105.2, avgRebounds: 42.1, avgAssists: 24.5 },
-          { name: 'Team B', avgPoints: 98.7, avgRebounds: 40.3, avgAssists: 22.8 },
-          { name: 'Team C', avgPoints: 110.1, avgRebounds: 45.2, avgAssists: 26.7 },
-        ],
-        playerStats: [
-          { playerName: 'Akif', avgPoints: 25.3, avgRebounds: 8.1, avgAssists: 6.2, avgSteals: 2.1, avgBlocks: 1.8, team: 'Team A, Team B', gamesPlayed: 12 },
-          { playerName: 'Anis', avgPoints: 22.7, avgRebounds: 6.8, avgAssists: 7.5, avgSteals: 1.9, avgBlocks: 0.9, team: 'Team B', gamesPlayed: 7 },
-        ],
+        teamStats: [],
+        playerStats: [],
         gameHighs: {
-          points: [
-            { playerName: 'Akif', value: 45, team: 'Team A', date: new Date() },
-            { playerName: 'Anis', value: 38, team: 'Team B', date: new Date() },
-          ],
-          rebounds: [
-            { playerName: 'Akif', value: 18, team: 'Team A', date: new Date() },
-            { playerName: 'Anis', value: 15, team: 'Team B', date: new Date() },
-          ],
-          assists: [
-            { playerName: 'Anis', value: 15, team: 'Team B', date: new Date() },
-            { playerName: 'Akif', value: 12, team: 'Team A', date: new Date() },
-          ],
-          steals: [
-            { playerName: 'Akif', value: 6, team: 'Team A', date: new Date() },
-            { playerName: 'Anis', value: 5, team: 'Team B', date: new Date() },
-          ],
-          blocks: [
-            { playerName: 'Akif', value: 4, team: 'Team A', date: new Date() },
-            { playerName: 'Anis', value: 3, team: 'Team B', date: new Date() },
-          ],
-          threeMade: [
-            { playerName: 'Akif', value: 8, team: 'Team A', date: new Date() },
-            { playerName: 'Anis', value: 6, team: 'Team B', date: new Date() },
-          ],
+          points: [],
+          rebounds: [],
+          assists: [],
+          steals: [],
+          blocks: [],
+          threeMade: [],
         },
       });
     } finally {
@@ -156,7 +145,7 @@ const Dashboard: React.FC = () => {
               <UsersIcon className="w-6 h-6 text-green-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Total Players</p>
+              <p className="text-sm font-medium text-gray-600">Total Distinct Players</p>
               <p className="text-2xl font-bold text-gray-900">{stats?.totalPlayers || 0}</p>
             </div>
           </div>
@@ -180,9 +169,11 @@ const Dashboard: React.FC = () => {
               <ArrowTrendingUpIcon className="w-6 h-6 text-purple-600" />
             </div>
             <div className="ml-4">
-              <p className="text-sm font-medium text-gray-600">Avg Points for Team A</p>
+              <p className="text-sm font-medium text-gray-600">
+                Avg OPPG 
+              </p>
               <p className="text-2xl font-bold text-gray-900">
-                {stats?.teamStats?.find(team => team.name === 'Team A')?.avgPoints || 0}
+                {stats?.avgPointsTeamAAndB?.toFixed(1) || '0.0'}
               </p>
             </div>
           </div>

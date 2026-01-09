@@ -114,11 +114,35 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     const allGames = await supabaseService.getGamesByUserId(req.user.userId);
     const recentGames = allGames.slice(0, 10);
 
+    // Calculate totals for this user
+    const totalGames = allGames.length;
+    
+    // Get distinct player count directly from database (more accurate)
+    const totalPlayers = await supabaseService.getDistinctPlayerCount(req.user.userId);
+    
+    // Get unique teams across all games
+    const allTeams = allGames.flatMap(game => game.teams || []);
+    const uniqueTeamNames = new Set(allTeams.map(t => t.name));
+    const totalTeams = uniqueTeamNames.size;
+
     // Get player statistics
     const playerStats = await calculatePlayerStats(req.user.userId);
 
     // Get team statistics
     const teamStats = await calculateTeamStats(req.user.userId);
+
+    // Calculate average points between Team A and Team B
+    const teamA = teamStats.find(team => team.name === 'Team A');
+    const teamB = teamStats.find(team => team.name === 'Team B');
+    let avgPointsTeamAAndB = 0;
+    
+    if (teamA && teamB) {
+      avgPointsTeamAAndB = (teamA.avgPoints + teamB.avgPoints) / 2;
+    } else if (teamA) {
+      avgPointsTeamAAndB = teamA.avgPoints;
+    } else if (teamB) {
+      avgPointsTeamAAndB = teamB.avgPoints;
+    }
 
     // Get top performers
     const topPerformers = await getTopPerformers(req.user.userId);
@@ -127,6 +151,10 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     const gameHighs = await getGameHighs(req.user.userId);
 
     const analyticsData: AnalyticsData = {
+      totalGames,
+      totalPlayers,
+      totalTeams,
+      avgPointsTeamAAndB,
       playerStats,
       teamStats,
       recentGames,
@@ -296,12 +324,8 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
   const teamMap = new Map<string, any>();
 
   for (const game of games) {
-    // Only include teams with custom/specific names (not generic "Team A" or "Team B")
-    const hasCustomHomeTeam = game.homeTeam !== 'Team A' && game.homeTeam !== 'Team B';
-    const hasCustomAwayTeam = game.awayTeam !== 'Team A' && game.awayTeam !== 'Team B';
-
-    // Process home team (only if it has a custom name)
-    if (hasCustomHomeTeam) {
+    // Process home team (include all teams, even "Team A" and "Team B")
+    if (game.homeTeam) {
       if (!teamMap.has(game.homeTeam)) {
         teamMap.set(game.homeTeam, {
           name: game.homeTeam,
@@ -368,8 +392,8 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
       }
     }
 
-    // Process away team (only if it has a custom name)
-    if (hasCustomAwayTeam) {
+    // Process away team (include all teams, even "Team A" and "Team B")
+    if (game.awayTeam) {
       if (!teamMap.has(game.awayTeam)) {
         teamMap.set(game.awayTeam, {
           name: game.awayTeam,

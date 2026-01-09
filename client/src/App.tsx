@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import Analytics from './pages/Analytics';
 import Games from './pages/Games';
+import EditGame from './pages/EditGame';
 import Login from './pages/Login';
 import ICloud2FA from './pages/ICloud2FA';
 import AdminDashboard from './pages/AdminDashboard';
@@ -74,6 +75,7 @@ const AppRoutes: React.FC = () => {
         <Route path="upload" element={<Upload />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="games" element={<Games />} />
+        <Route path="games/:gameId/edit" element={<EditGame />} />
       </Route>
     </Routes>
   );

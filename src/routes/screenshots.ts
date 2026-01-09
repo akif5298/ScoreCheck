@@ -1056,4 +1056,103 @@ router.post('/generate-team-names', authenticateToken, async (req: Request, res:
   }
 });
 
+// Start game edit route (subtract current stats from totals)
+router.post('/games/:gameId/start-edit', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { gameId } = req.params;
+
+    if (!gameId) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'Game ID is required',
+      };
+      return res.status(400).json(response);
+    }
+
+    // Start the game edit process (subtract current stats from totals)
+    const result = await supabaseService.startGameEdit(gameId);
+
+    if (result) {
+      const response: ApiResponse = {
+        success: true,
+        data: result,
+        message: 'Game edit started successfully',
+      };
+      return res.json(response);
+    } else {
+      const response: ApiResponse = {
+        success: false,
+        error: 'Failed to start game edit',
+      };
+      return res.status(404).json(response);
+    }
+  } catch (error) {
+    console.error('Error starting game edit:', error);
+    const response: ApiResponse = {
+      success: false,
+      error: 'Internal server error',
+    };
+    return res.status(500).json(response);
+  }
+});
+
+// Update game details
+router.put('/games/:gameId', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { gameId } = req.params;
+    const { homeTeam, awayTeam, homeScore, awayScore, date, players } = req.body;
+
+    if (!req.user) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'User not authenticated',
+      };
+      return res.status(401).json(response);
+    }
+
+    if (!homeTeam || !awayTeam || homeScore === undefined || awayScore === undefined || !date || !players) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'Missing required fields: homeTeam, awayTeam, homeScore, awayScore, date, players',
+      };
+      return res.status(400).json(response);
+    }
+
+    // Update the game in the database
+    const updatedGame = await supabaseService.updateGame(gameId!, {
+      homeTeam,
+      awayTeam,
+      homeScore,
+      awayScore,
+      date,
+      players,
+    });
+
+    if (!updatedGame) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'Failed to update game',
+      };
+      return res.status(500).json(response);
+    }
+
+    const response: ApiResponse<Game> = {
+      success: true,
+      data: updatedGame,
+      message: 'Game updated successfully',
+    };
+
+    return res.status(200).json(response);
+  } catch (error) {
+    console.error('Error updating game:', error);
+    
+    const response: ApiResponse = {
+      success: false,
+      error: 'Failed to update game',
+    };
+
+    return res.status(500).json(response);
+  }
+});
+
 export default router;

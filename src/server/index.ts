@@ -83,6 +83,12 @@ app.use('/uploads', express.static(path.join(__dirname, '../../uploads'), {
   },
 }));
 
+// Serve React build in production
+if (process.env.NODE_ENV === 'production') {
+  const clientBuildPath = path.join(__dirname, '../../client/build');
+  app.use(express.static(clientBuildPath));
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -100,13 +106,27 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/health', healthRoutes);
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    error: 'Route not found',
+// Serve React app for all non-API routes in production
+if (process.env.NODE_ENV === 'production') {
+  app.get('*', (req, res) => {
+    // Don't serve React app for API routes
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({
+        success: false,
+        error: 'Route not found',
+      });
+    }
+    return res.sendFile(path.join(__dirname, '../../client/build/index.html'));
   });
-});
+} else {
+  // 404 handler for development (when React dev server is separate)
+  app.use('*', (req, res) => {
+    res.status(404).json({
+      success: false,
+      error: 'Route not found',
+    });
+  });
+}
 
 // Global error handler
 app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

@@ -6,6 +6,7 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
 // Import routes
 import authRoutes from '@/routes/auth';
@@ -83,9 +84,9 @@ app.use('/uploads', express.static(path.join(__dirname, '../../uploads'), {
   },
 }));
 
-// Serve React build in production
-if (process.env.NODE_ENV === 'production') {
-  const clientBuildPath = path.join(__dirname, '../../client/build');
+// Serve React build in production or if build directory exists
+const clientBuildPath = path.join(__dirname, '../../client/build');
+if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
   app.use(express.static(clientBuildPath));
 }
 
@@ -106,8 +107,8 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/health', healthRoutes);
 
-// Serve React app for all non-API routes in production
-if (process.env.NODE_ENV === 'production') {
+// Serve React app for all non-API routes in production or if build exists
+if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
   app.get('*', (req, res) => {
     // Don't serve React app for API routes
     if (req.path.startsWith('/api/')) {

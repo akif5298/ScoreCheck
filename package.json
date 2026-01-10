@@ -9,7 +9,7 @@
     "dev:server": "nodemon --exec ts-node -r tsconfig-paths/register src/server/index.ts",
     "dev:client": "cd client && npm start",
     "build": "npm run build:server && npm run build:client",
-    "build:server": "tsc -p tsconfig.json",
+    "build:server": "tsc -p tsconfig.json && tsc-alias",
     "build:client": "cd client && npm run build",
     "start": "node dist/server/index.js",
     "db:migrate": "npx prisma migrate dev",
@@ -73,6 +73,7 @@
     "nodemon": "^3.0.1",
     "ts-jest": "^29.1.1",
     "ts-node": "^10.9.1",
+    "tsc-alias": "^1.8.10",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.2.2"
   }

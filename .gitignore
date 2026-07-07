@@ -159,15 +159,25 @@ coverage.xml
 uploads/
 binary_ocr_output/
 temp_*
+
+# Eval harness images (large binary files; populate locally)
+eval/screenshots/*
+!eval/screenshots/.gitkeep
+eval/junk_samples/*
+!eval/junk_samples/.gitkeep
 *_threshold.png
 *_enhanced.png
 *_multilevel.png
 *_preprocessed.png
 
 # Package manager files
-package-lock.json
+# NOTE: package-lock.json is intentionally tracked — CI runs `npm ci`, which
+# requires a committed lockfile. Only non-npm lockfiles are ignored (npm is
+# the single package manager for this repo).
 yarn.lock
 pnpm-lock.yaml
+bun.lock
+bun.lockb
 
 # TypeScript
 *.tsbuildinfo
@@ -179,3 +189,16 @@ coverage/
 # Misc
 *.tgz
 *.tar.gz
+
+# Eval debug outputs (generated per run, not useful to commit)
+eval/debug_output.json
+eval/raw_output.json
+
+# Local model files (large — should never be committed)
+*.gguf
+
+# graphify derived knowledge-graph output (regenerate with `graphify update .`)
+graphify-out/
+
+# R history
+.Rhistory

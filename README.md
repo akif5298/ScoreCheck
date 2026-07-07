@@ -1,308 +1,208 @@
-# ScoreCheck 🏀 - Comprehensive OCR Optimization Project
+# ScoreCheck
 
-A comprehensive NBA 2K25 box score analysis application that extracts data from screenshots and provides detailed analytics, with advanced OCR optimization achieving 100% accuracy.
+An NBA 2K26 box score tracker. Upload a screenshot, confirm the auto-extracted stats, and track your friend group's performance over time.
 
-## 🎯 Project Overview
+## Features
 
-This project optimizes OCR (Optical Character Recognition) accuracy for basketball box score images, specifically targeting `01_binary_for_ocr.png` to achieve 99%+ accuracy. The system combines Google Cloud Vision API with advanced image preprocessing and basketball-specific validation rules.
+- **Screenshot upload**: Drop a box score screenshot and stats are extracted automatically
+- **OCR review UI**: Confirm or correct extracted stats before saving
+- **Dashboard**: Game highs, recent games, and per-player stat trends
+- **Player analytics**: Per-player averages across all tracked games
+- **Team standings**: Win/loss records with shooting percentages
+- **Lineup efficiency**: Groups of 5 players ranked by average point differential
+- **Apple Sign-In**: JWT-backed auth with dev mock bypass
+- **Admin dashboard**: Manage users, games, and roles
+- **Eval harness**: Reproducible field-level OCR accuracy measurement (`npm run eval`)
 
-## 🚀 Key Features
+## Upload Pipeline
 
-- 📱 **Apple Integration**: Seamlessly import box score screenshots from your Apple account
-- 🔍 **Advanced OCR Processing**: Extract player and team statistics using Google Cloud Vision API
-- 🎯 **100% OCR Accuracy**: Multi-strategy preprocessing with enhanced cleaning algorithms
-- 📊 **Advanced Analytics**: View player averages, team performance, and detailed metrics
-- 🎯 **Real-time Updates**: Track performance trends over time
-- 📈 **Visual Dashboards**: Beautiful charts and graphs for data visualization
-- 🔐 **Role-Based Access**: User and admin roles with different permissions
-- 👑 **Admin Dashboard**: Master account access to manage all users and data
-- 🔒 **iCloud 2FA Support**: Dedicated authentication page for Apple Sign-In
+```
+Upload (JPEG / PNG)
+        │
+        ▼
+  Auth gate ──────── JWT verified; rate-limited per user
+        │
+        ▼
+  MIME check ─────── magic-byte validation via multer
+        │
+        ▼
+  Perceptual hash ── 16×16 dhash; rejects re-uploads (Hamming ≤ 10)
+        │
+        ▼
+  Junk filter ─────── Ollama minicpm-v:latest; fails open if offline
+        │             → 422 if image is clearly not a box score
+        ▼
+  VLM extraction ──── Ollama qwen2.5vl:3b-fp16 (local, $0 per image)
+        │             team-half crops (5 players each) → per-row retry
+        │             for misses → full-image fallback
+        ▼
+  BoxScoreParser ──────── normalizes player rows, infers team names
+        │
+        ▼
+  Review UI ───────────── user confirms or edits extracted stats
+        │
+        ▼
+  Atomic save ─────────── Prisma transaction: game + players + teams
+```
 
-## 🏆 OCR Results
+## Tech Stack
 
-- **01_original_binary.png**: 99.2% accuracy (1 invalid region)
-- **01_binary_for_ocr.png**: 100.0% accuracy (0 invalid regions) ✅
+| Layer | Stack |
+|---|---|
+| Backend | Node.js 20 · Express 4 · TypeScript 5 |
+| ORM / DB | Prisma 5.6 · Supabase (PostgreSQL) |
+| Frontend | React 19 · TanStack Router 1.x · TanStack Start · TanStack Query 5 |
+| Styling | Tailwind CSS 4 · Radix UI · shadcn/ui |
+| Charts | Recharts 2 |
+| Auth | Apple Sign-In · JWT |
+| Stat extraction | Ollama · qwen2.5vl:3b-fp16 (local VLM) |
+| Junk filter | Ollama · minicpm-v:latest |
+| Image processing | sharp (crops/scaling) |
+| Fine-tuning | Python · Unsloth QLoRA (see [FINETUNING_GUIDE.md](FINETUNING_GUIDE.md)) |
 
-## 🛠️ Tech Stack
+## Quick Start
 
-- **Backend**: Node.js + Express + TypeScript
-- **Database**: PostgreSQL
-- **Frontend**: React + TypeScript + Tailwind CSS
-- **Image Processing**: Google Cloud Vision API + OpenCV + Python
-- **Authentication**: Apple Sign-In
-- **Deployment**: Docker
+### 1. Install dependencies
 
-## 📁 Project Structure
-
-### Core OCR Files
-- **`final_optimization_01_binary.py`** - Main optimization script achieving 100% accuracy
-- **`generate_binary_ocr.py`** - Image preprocessing functions (yellow selector removal, contrast enhancement, multi-level thresholding)
-- **`binary_ocr_output/`** - Test images and processed outputs
-
-### Configuration
-- **`.env`** - Environment variables for Google Cloud Vision API
-- **`python_requirements.txt`** - Python dependencies
-- **`service-account-key.json`** - Google Cloud service account credentials
-
-### Documentation
-- **`OPTIMIZATION_SUMMARY.md`** - Detailed analysis of optimization techniques used
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
 ```bash
-# Python dependencies for OCR
-pip install -r python_requirements.txt
-
-# Node.js dependencies
+# Node.js (backend + frontend)
 npm install
+cd client && npm install
+
+# Ollama (local VLM for extraction + junk filter)
+# Install from https://ollama.com then:
+ollama pull qwen2.5vl:3b-fp16
+ollama pull minicpm-v:latest
+
+# Python — only needed for the fine-tuning pipeline (labeling, QLoRA training)
+pip install -r scripts/requirements_finetune.txt
 ```
 
-### 2. Set Up Environment Variables
-Create a `.env` file with the following variables:
+### 2. Configure environment
 
-```env
-# Database
-DATABASE_URL=postgresql://username:password@localhost:5432/scorecheck
+Copy `env.example` to `.env` and fill in values — see [Environment Variables](#environment-variables) below.
 
-# Google Cloud Vision
-GOOGLE_CLOUD_PROJECT_ID=your-project-id
-GOOGLE_CLOUD_PRIVATE_KEY=your-private-key
-GOOGLE_CLOUD_CLIENT_EMAIL=your-client-email
+### 3. Set up database
 
-# Apple Sign-In
-APPLE_CLIENT_ID=your-apple-client-id
-APPLE_TEAM_ID=your-apple-team-id
-APPLE_PRIVATE_KEY=your-apple-private-key
-
-# JWT Secret
-JWT_SECRET=your-jwt-secret
-```
-
-### 3. Set Up Google Cloud Vision API
-
-#### Quick Setup
 ```bash
-pip install google-cloud-vision
+npm run db:migrate       # apply schema migrations
+npm run db:generate      # generate Prisma client
+npm run db:setup-admin   # create master admin account
 ```
 
-#### Detailed Setup
-1. **Go to [Google Cloud Console](https://console.cloud.google.com/)**
-2. **Create a new project** or select existing one
-3. **Enable the Vision API:**
-   - Go to "APIs & Services" > "Library"
-   - Search for "Cloud Vision API"
-   - Click "Enable"
-4. **Create Service Account:**
-   - Go to "APIs & Services" > "Credentials"
-   - Click "Create Credentials" > "Service Account"
-   - Name: `scorecheck-vision-api`
-5. **Generate JSON Key:**
-   - Click on service account > "Keys" tab
-   - "Add Key" > "Create new key" > "JSON"
-   - Download and save as `service-account-key.json`
+### 4. Start dev servers
 
-### 4. Database Setup
 ```bash
-npm run db:migrate
-npm run db:generate
-npm run db:setup-admin
-```
-
-### 5. Run OCR Optimization
-```bash
-# Test OCR accuracy
-python final_optimization_01_binary.py
-
-# Start the application
 npm run dev
 ```
 
-## 🔧 OCR Optimization Features
+This starts the Express API (port 3001) and Vite frontend (port 8080) concurrently.
 
-### 1. Multi-Strategy Preprocessing
-- **Original**: Raw image processing
-- **Adaptive**: Gaussian adaptive thresholding
-- **CLAHE + Otsu**: Contrast enhancement with optimal thresholding
-- **Multi-level**: Multiple threshold levels combined
-- **Edge-preserving**: Bilateral filtering for edge preservation
+## Environment Variables
 
-### 2. Enhanced OCR Cleaning
-- **Character Substitutions**: O→0, l→1, S→5, G→6, B→8, Z→2
-- **Context-Aware Fallbacks**: Basketball-specific validation rules
-- **Automatic Inference**: Infer "0" for common empty stat fields
-- **Pattern Recognition**: Handle OCR artifacts and noise
+Copy `env.example` to `.env`. Variables marked **Required** must be set before the server will start.
 
-### 3. Basketball-Specific Validation
-- **Points**: 0-100 range validation
-- **Rebounds**: 0-30 range validation
-- **Assists**: 0-25 range validation
-- **Steals/Blocks**: 0-15 range validation
-- **Fouls**: 0-6 range validation
-- **Turnovers**: 0-15 range validation
+| Variable | Required | Description |
+|---|---|---|
+| `DATABASE_URL` | Yes | Supabase Postgres connection string (Prisma) |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_PUBLISHABLE_KEY` | Yes | Supabase anon/public key |
+| `SUPABASE_SECRET_KEY` | Yes | Supabase service-role key (bypasses RLS) |
+| `JWT_SECRET` | Yes | Signs all bearer tokens (`crypto.randomBytes(64).toString('hex')`) |
+| `JWT_EXPIRES_IN` | Yes | Token TTL, e.g. `7d` |
+| `APPLE_CLIENT_ID` | Prod only | Apple app bundle ID |
+| `APPLE_TEAM_ID` | Prod only | Apple developer team ID |
+| `APPLE_PRIVATE_KEY` | Prod only | Apple private key (PEM) |
+| `APPLE_KEY_ID` | Prod only | Apple key identifier |
+| `PORT` | No | Server port (default `3001`) |
+| `NODE_ENV` | No | `development` or `production` |
+| `MAX_FILE_SIZE` | No | Upload limit in bytes (default `10485760` = 10 MB) |
+| `RATE_LIMIT_WINDOW_MS` | No | Rate window in ms (default `900000` = 15 min) |
+| `RATE_LIMIT_MAX_REQUESTS` | No | Max requests per window (default `100`) |
+| `OLLAMA_BASE_URL` | No | Ollama URL (default `http://localhost:11434`). Stat extraction requires a reachable Ollama; the junk filter fails open if unreachable |
 
-## 📊 API Endpoints
+> In development, passing `mock_identity_token` as the Apple identity token skips Apple verification. This lets you sign in without Apple credentials configured.
 
-### Authentication
-- `POST /api/auth/apple` - Apple Sign-In authentication
-- `POST /api/auth/verify` - Verify JWT token
+## API Endpoints
 
-### User Features
-- `POST /api/screenshots/upload` - Upload box score screenshot
-- `GET /api/players` - Get player statistics
-- `GET /api/teams` - Get team statistics
-- `GET /api/analytics` - Get analytics data
+All endpoints except `/api/health` and auth routes require `Authorization: Bearer <token>`.
 
-### Admin Features (Admin only)
-- `GET /api/admin/users` - Get all users
-- `GET /api/admin/games` - Get all games
-- `DELETE /api/admin/games/:gameId` - Delete any game
-- `DELETE /api/admin/users/:userId` - Delete any user
-- `PATCH /api/admin/users/:userId/role` - Update user role
-- `GET /api/admin/dashboard` - Get admin dashboard statistics
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/auth/apple` | Apple Sign-In — returns JWT |
+| `POST` | `/api/auth/verify` | Verify JWT token |
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/screenshots/upload` | Upload a screenshot; returns OCR-extracted stats for review |
+| `POST` | `/api/screenshots/upload-multiple` | Upload up to 10 screenshots |
+| `POST` | `/api/screenshots/save` | Confirm reviewed stats; atomically saves game, players, and teams |
+| `GET` | `/api/screenshots/games` | List all games for the authenticated user |
+| `GET` | `/api/screenshots/games/:gameId` | Full box score for one game (all player rows) |
+| `GET` | `/api/analytics/dashboard` | Recent games, top performers, and game highs |
+| `GET` | `/api/analytics/players` | Per-player aggregated stats |
+| `GET` | `/api/analytics/teams` | Per-team aggregated stats (W/L, FG%, 3P%) |
+| `GET` | `/api/analytics/lineups` | Lineup efficiency (groups of 5, min 2 games) |
+| `GET` | `/api/admin/users` | All users (admin only) |
+| `GET` | `/api/admin/games` | All games (admin only) |
+| `GET` | `/api/admin/dashboard` | Admin dashboard stats |
+| `DELETE` | `/api/admin/games/:gameId` | Delete any game (admin only) |
+| `DELETE` | `/api/admin/users/:userId` | Delete any user (admin only) |
+| `PATCH` | `/api/admin/users/:userId/role` | Update user role (admin only) |
 
-## 🐍 Python Integration
+## Development Scripts
 
-### Prerequisites
-- **Python 3.8 or higher**
-- **pip** for package management
-
-### Setup Scripts
 ```bash
-# Windows
-setup_python.bat
+npm run dev           # start API + client concurrently (watch mode)
+npm run build         # compile TypeScript + Vite production build
+npm run test          # Jest test suite
+npm run lint          # ESLint
 
-# Linux/macOS
-chmod +x setup_python.sh
-./setup_python.sh
+# Extraction eval
+npm run eval          # field-accuracy eval against labeled screenshots
+npm run eval:bench    # full-pipeline benchmark (per-image accuracy + latency)
+npm run eval:junk     # junk filter accuracy eval
+
+# Fine-tuning data pipeline
+npm run label         # GUI labeling tool — add screenshots to ground truth
+npm run label:cli     # CLI labeling tool (one screenshot at a time)
+npm run export:dataset  # export labels as JSONL for QLoRA training
+npm run finetune      # run QLoRA fine-tuning via Unsloth
+
+# Database
+npm run db:migrate       # apply Prisma migrations
+npm run db:generate      # generate Prisma client
+npm run db:setup-admin   # create master admin account
 ```
 
-### Manual Setup
-```bash
-# Create virtual environment
-python -m venv venv
+## Extraction Accuracy
 
-# Activate (Windows)
-venv\Scripts\activate.bat
+Field-level accuracy is measured by the eval harness in `eval/`. Add labeled screenshots to `eval/screenshots/` using `npm run label`, then run `npm run eval`.
 
-# Activate (Linux/macOS)
-source venv/bin/activate
+Current measured results (qwen2.5vl:3b-fp16, 5 labeled screenshots — see [eval/benchmark_qwen25vl_3b_fp16.md](eval/benchmark_qwen25vl_3b_fp16.md)):
 
-# Install dependencies
-pip install -r python_requirements.txt
+| Metric | Result |
+|---|---|
+| Player detection | 49/50 rows |
+| Name accuracy | 40/49 (one image failed name matching entirely) |
+| Field-level stat accuracy | 71% avg (per-image range: 26–94%) |
+| Latency per image | 90–130 s (local GPU) |
+| Cost per image | $0 (fully local) |
+
+These numbers are from a small 5-image dataset and vary heavily per image — treat them as a baseline, not a settled benchmark. A fine-tuned model targeting >95% is in progress; see [FINETUNING_GUIDE.md](FINETUNING_GUIDE.md).
+
+## Project Structure
+
+```
+src/                  Backend — Express routes, services, middleware
+client/               Frontend — React 19 / TanStack Router / TanStack Start
+eval/                 Extraction accuracy benchmark harness and labeled dataset
+scripts/              Fine-tuning data pipeline (label, export, train)
+prisma/               Database schema and migrations
 ```
 
-### Python Dependencies
-| Package | Purpose |
-|---------|---------|
-| opencv-python | Computer vision and image processing |
-| Pillow | Image manipulation and format conversion |
-| numpy | Numerical computing |
-| google-cloud-vision | Google Cloud Vision API client |
-| python-dotenv | Environment variable management |
+## Docker
 
-## 🔍 Testing OCR
-
-### Test OCR Quality
 ```bash
-# Test with main optimization script
-python final_optimization_01_binary.py
-
-# Test with specific image
-python generate_binary_ocr.py
+docker compose up --build
 ```
 
-### Health Check
-```bash
-# Check Python integration
-curl http://localhost:3001/api/health/python-image-processing
-```
-
-## 🚨 Troubleshooting
-
-### Common OCR Issues
-
-#### 1. Python Not Found
-**Error**: `Python is not available on the system`
-**Solution**: Ensure Python is installed and in PATH
-
-#### 2. Missing Dependencies
-**Error**: `Required Python packages are missing`
-**Solution**: Activate virtual environment and install packages
-
-#### 3. Google Cloud Vision Errors
-**Error**: `Permission denied` or `Invalid credentials`
-**Solution**: Check service account roles and JSON key file
-
-#### 4. OCR Accuracy Issues
-**Problem**: Low accuracy on specific images
-**Solution**: Use multi-strategy preprocessing and enhanced cleaning
-
-### Debug Mode
-```bash
-export DEBUG_PYTHON_PROCESSING=true
-```
-
-## 💰 Cost Considerations
-
-### Google Cloud Vision API
-- **First 1000 requests/month: FREE**
-- **Additional requests: $1.50 per 1000**
-- **Text detection: $1.50 per 1000 images**
-
-For testing purposes, you'll likely stay within the free tier!
-
-## 🔒 Security Considerations
-
-- **Process isolation**: Python runs in separate process
-- **Temporary files**: Automatically cleaned up
-- **Input validation**: All parameters are validated
-- **Error handling**: No sensitive information leaked
-- **API keys**: Stored securely in environment variables
-
-## 🚀 Performance Features
-
-### OCR Optimization
-- **Multi-strategy preprocessing**: 5 different techniques for optimal results
-- **Enhanced cleaning**: Context-aware character substitutions
-- **Fallback strategies**: Automatic inference for missing data
-- **Basketball validation**: Sport-specific rule enforcement
-
-### Image Processing
-- **OpenCV backend**: Optimized C++ performance
-- **PIL integration**: Efficient format handling
-- **Memory management**: Automatic cleanup and buffer management
-
-## 🔮 Future Enhancements
-
-- **GPU acceleration** with CUDA support
-- **Batch processing** for multiple images
-- **Machine learning** integration for image analysis
-- **Adaptive coordinates** for different image formats
-- **Real-time OCR** processing
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
-
-## 📄 License
-
-MIT License
-
----
-
-## 🎉 Success Metrics
-
-- ✅ **100% OCR Accuracy** achieved on target images
-- ✅ **Multi-strategy preprocessing** implemented
-- ✅ **Enhanced cleaning algorithms** with basketball validation
-- ✅ **Google Cloud Vision integration** working
-- ✅ **Python image processing** optimized
-- ✅ **Comprehensive documentation** provided
-
-**Status**: 🚀 **Production Ready**
-**Confidence**: 💯 **100% OCR Accuracy Achieved**
-**Performance**: ⚡ **Optimized for Speed and Accuracy**
+Requires `.env` to be populated. The container includes Node.js, Python, and OpenSSL for Prisma compatibility.

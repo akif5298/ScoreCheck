@@ -87,9 +87,12 @@ app.use('/uploads', express.static(path.join(__dirname, '../../uploads'), {
   },
 }));
 
-// Serve React build in production or if build directory exists
-const clientBuildPath = path.join(__dirname, '../../client/build');
-if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
+// Serve the client SPA build (TanStack Start SPA mode → client/dist/client,
+// with _shell.html as the prerendered app shell).
+const clientBuildPath = path.join(__dirname, '../../client/dist/client');
+const clientShellPath = path.join(clientBuildPath, '_shell.html');
+const clientBuildExists = fs.existsSync(clientShellPath);
+if (clientBuildExists) {
   app.use(express.static(clientBuildPath));
 }
 
@@ -111,17 +114,17 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/mappings', mappingsRouter);
 
-// Serve React app for all non-API routes in production or if build exists
-if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
+// Serve the SPA shell for all non-API routes when a client build exists
+if (clientBuildExists) {
   app.get('*', (req, res) => {
-    // Don't serve React app for API routes
+    // Don't serve the SPA shell for API routes
     if (req.path.startsWith('/api/')) {
       return res.status(404).json({
         success: false,
         error: 'Route not found',
       });
     }
-    return res.sendFile(path.join(__dirname, '../../client/build/index.html'));
+    return res.sendFile(clientShellPath);
   });
 } else {
   // 404 handler for development (when React dev server is separate)

@@ -11,5 +11,9 @@ export default defineConfig({
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+    // SPA mode: prerender a static index.html shell into dist/client so the
+    // Express server can serve the app without running the nitro SSR server.
+    // Every page is behind auth with client-side fetching, so SSR adds nothing.
+    spa: { enabled: true },
   },
 });

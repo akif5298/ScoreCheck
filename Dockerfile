@@ -1,9 +1,7 @@
-# Use Node.js 18 Alpine as base image
-FROM node:18-alpine
+# Node 22 to match CI and Vite/TanStack Start requirements
+FROM node:22-alpine
 
-# Install Python and build dependencies for native modules (canvas, sharp, etc.)
-# Canvas requires: cairo, pango, pixman, pkg-config, and image libraries
-# OpenSSL is required for Prisma to work correctly
+# Native-module build deps (canvas needs cairo/pango; Prisma needs OpenSSL)
 RUN apk add --no-cache \
     python3 \
     make \
@@ -19,43 +17,29 @@ RUN apk add --no-cache \
     giflib-dev \
     librsvg-dev
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files for root
+# Install server deps first (layer-cached until package files change)
 COPY package*.json ./
 COPY prisma ./prisma/
+RUN npm ci
 
-# Install all dependencies (including dev dependencies for building)
-RUN npm install
+# Install client deps
+COPY client/package*.json ./client/
+RUN cd client && npm ci
 
-# Generate Prisma client
-RUN npx prisma generate
-
-# Copy source code
+# Copy source and build
 COPY . .
+RUN npx prisma generate
+RUN npm run build:api
+RUN cd client && npm run build
 
-# Build the TypeScript server
-RUN npm run build:server
+# Slim the image: drop dev deps and client build tooling
+RUN npm prune --omit=dev && rm -rf client/node_modules
 
-# Build the React client
-WORKDIR /app/client
-COPY client/package*.json ./
-RUN npm install
-COPY client/ ./
-RUN npm run build
-
-# Back to main directory
-WORKDIR /app
-
-# Remove dev dependencies to reduce image size (optional but recommended)
-RUN npm prune --production
-
-# Create uploads directory
 RUN mkdir -p uploads
 
-# Expose port
+ENV NODE_ENV=production
 EXPOSE 3001
 
-# Start the application
 CMD ["npm", "start"]

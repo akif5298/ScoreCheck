@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 
 declare global {
+  // eslint-disable-next-line no-var -- `var` is required in ambient global declarations
   var prisma: PrismaClient | undefined;
 }
 

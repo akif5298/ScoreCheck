@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import appleAuthService from '@/services/appleAuth';
 import { JwtPayload } from '@/types';
+import logger from '@/utils/logger';
 
 declare global {
   namespace Express {
@@ -28,7 +29,7 @@ export const authenticateToken = async (
     req.user = payload;
     next();
   } catch (error) {
-    console.error('Authentication error:', error);
+    logger.error({ err: error }, 'Authentication error');
     res.status(401).json({ success: false, error: 'Authentication failed' });
   }
 };

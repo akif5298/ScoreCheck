@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import appleAuthService from '@/services/appleAuth';
 import { AppleAuthRequest, ApiResponse } from '@/types';
+import logger from '@/utils/logger';
 
 const router = Router();
 
@@ -39,7 +40,7 @@ router.post('/apple', async (req: Request, res: Response) => {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Apple authentication error:', error);
+    logger.error({ err: error }, 'Apple authentication error');
     
     const response: ApiResponse = {
       success: false,
@@ -87,7 +88,7 @@ router.post('/verify', async (req: Request, res: Response) => {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Token verification error:', error);
+    logger.error({ err: error }, 'Token verification error');
     
     const response: ApiResponse = {
       success: false,

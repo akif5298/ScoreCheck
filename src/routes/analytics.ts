@@ -1,14 +1,12 @@
 import { Router, Request, Response } from 'express';
-import supabaseService from '@/services/supabase';
+import supabaseService, { pgClient } from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
 import { ApiResponse, AnalyticsData, PlayerStats } from '@/types';
+import logger from '@/utils/logger';
+import { ALLOWED_PLAYER_NAMES } from '@/constants';
+import { getLineupEfficiency } from '@/services/lineupEfficiency';
 
 const router = Router();
-
-// Only allow these specific player names in stats and dashboard
-const ALLOWED_PLAYER_NAMES = [
-  'Akif', 'Anis', 'Abdul', 'Ikroop', 'Nillan', 'Dylan', 'Ankit', 'TV', 'Kashif'
-];
 
 // Get player statistics
 router.get('/players', authenticateToken, async (req: Request, res: Response) => {
@@ -42,7 +40,7 @@ router.get('/players', authenticateToken, async (req: Request, res: Response) =>
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Error fetching player statistics:', error);
+    logger.error({ err: error }, 'Error fetching player statistics');
     
     const response: ApiResponse = {
       success: false,
@@ -88,7 +86,7 @@ router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Error fetching team statistics:', error);
+    logger.error({ err: error }, 'Error fetching team statistics');
     
     const response: ApiResponse = {
       success: false,
@@ -169,13 +167,33 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
 
     return res.status(200).json(response);
   } catch (error) {
-    console.error('Error fetching analytics dashboard:', error);
+    logger.error({ err: error }, 'Error fetching analytics dashboard');
     
     const response: ApiResponse = {
       success: false,
       error: 'Failed to fetch analytics dashboard',
     };
 
+    return res.status(500).json(response);
+  }
+});
+
+// Get lineup efficiency — groups of players by team, sorted by avg point differential
+router.get('/lineups', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      const response: ApiResponse = { success: false, error: 'User not authenticated' };
+      return res.status(401).json(response);
+    }
+    const lineups = await getLineupEfficiency(req.user.userId, pgClient);
+    const response: ApiResponse<{ lineups: typeof lineups }> = {
+      success: true,
+      data: { lineups },
+    };
+    return res.status(200).json(response);
+  } catch (error) {
+    logger.error({ err: error }, 'Error fetching lineup efficiency');
+    const response: ApiResponse = { success: false, error: 'Failed to fetch lineup efficiency' };
     return res.status(500).json(response);
   }
 });
@@ -215,10 +233,7 @@ async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
       userId: stats.userId,
     }));
   } catch (error) {
-    console.error('Error getting player stats from optimized table:', error);
-    
-    // Fallback to old calculation method if optimized table fails
-    console.log('🔄 Falling back to on-the-fly calculation...');
+    logger.error({ err: error }, 'Error getting player stats from optimized table; falling back to on-the-fly calculation');
     const games = await supabaseService.getGamesByUserId(userId);
     const players = games.flatMap(game => game.players || []);
 
@@ -227,13 +242,11 @@ async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
     for (const player of players) {
       // Skip players with null/undefined names or teams
       if (!player.name || !player.team) {
-        console.warn('Skipping player with missing name or team:', player);
         continue;
       }
-      
+
       // Only include players with allowed names
-      if (!ALLOWED_PLAYER_NAMES.includes(player.name)) {
-        console.warn(`Skipping player with non-allowed name: ${player.name}`);
+      if (!(ALLOWED_PLAYER_NAMES as readonly string[]).includes(player.name)) {
         continue;
       }
       
@@ -364,11 +377,7 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
       
       // Aggregate team stats from players (include ALL players for accurate team totals)
       const homePlayers = game.players?.filter((p: any) => p.team === game.homeTeam) || [];
-      console.log(`Team stats: ${game.homeTeam} (${homePlayers.length} players)`);
-      console.log(`DEBUG: game.homeTeam = "${game.homeTeam}"`);
-      console.log(`DEBUG: Available player teams:`, game.players?.map((p: any) => p.team) || []);
-      console.log(`DEBUG: homePlayers found:`, homePlayers.map((p: any) => ({ name: p.name, team: p.team })));
-      
+
       // Calculate team totals from ALL players (don't filter by allowed names)
       homeStats.totalRebounds += homePlayers.reduce((sum: number, p: any) => sum + (p.rebounds || 0), 0);
       homeStats.totalAssists += homePlayers.reduce((sum: number, p: any) => sum + (p.assists || 0), 0);
@@ -432,11 +441,7 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
       
       // Aggregate team stats from players (include ALL players for accurate team totals)
       const awayPlayers = game.players?.filter((p: any) => p.team === game.awayTeam) || [];
-      console.log(`Team stats: ${game.awayTeam} (${awayPlayers.length} players)`);
-      console.log(`DEBUG: game.awayTeam = "${game.awayTeam}"`);
-      console.log(`DEBUG: Available player teams:`, game.players?.map((p: any) => p.team) || []);
-      console.log(`DEBUG: awayPlayers found:`, awayPlayers.map((p: any) => ({ name: p.name, team: p.team })));
-      
+
       // Calculate team totals from ALL players (don't filter by allowed names)
       awayStats.totalRebounds += awayPlayers.reduce((sum: number, p: any) => sum + (p.rebounds || 0), 0);
       awayStats.totalAssists += awayPlayers.reduce((sum: number, p: any) => sum + (p.assists || 0), 0);

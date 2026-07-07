@@ -211,7 +211,8 @@ def main():
     parser.add_argument('--enhanced', action='store_true', help='Use enhanced preprocessing variant')
     parser.add_argument('--threshold', action='store_true', help='Create threshold image for turnover OCR')
     parser.add_argument('--multilevel', action='store_true', help='Create multi-level thresholding variant for rebounds/assists')
-    
+    parser.add_argument('--unique-id', help='Unique ID for deduplication (ignored)')
+
     args = parser.parse_args()
     
     if not os.path.exists(args.input):

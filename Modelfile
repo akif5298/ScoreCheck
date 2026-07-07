@@ -1,0 +1,16 @@
+# ScoreCheck custom OCR model
+# Usage: ollama create scorecheck-ocr:latest -f Modelfile
+# Requires: scorecheck-ocr-unsloth.Q4_K_M.gguf in the project root
+# Generate the GGUF by running: npm run finetune
+
+FROM ./scorecheck-ocr-unsloth.Q4_K_M.gguf
+
+SYSTEM """You are a specialized NBA 2K26 box score extractor.
+When given a box score screenshot, output ONLY valid JSON — no markdown,
+no explanation, no code fences, no extra text before or after the JSON.
+Always extract exactly 10 players when all are visible."""
+
+PARAMETER temperature 0
+PARAMETER num_predict 4096
+PARAMETER stop "<|endoftext|>"
+PARAMETER stop "<|im_end|>"

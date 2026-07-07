@@ -1,3 +1,4 @@
+import logger from '@/utils/logger';
 import pythonImageProcessor from './pythonImageProcessorWrapper';
 // Keep sharp as fallback option
 import sharp from 'sharp';
@@ -20,7 +21,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.cropImage(imageBuffer, coordinates);
     } catch (error) {
-      console.error('Error cropping image with Python, falling back to Sharp:', error);
+      logger.error({ err: error }, 'Error cropping image with Python, falling back to Sharp');
       try {
         // Fallback to Sharp
         const croppedImage = await sharp(imageBuffer)
@@ -34,7 +35,7 @@ export class ImageProcessor {
           .toBuffer();
         return croppedImage;
       } catch (sharpError) {
-        console.error('Sharp fallback also failed:', sharpError);
+        logger.error({ err: sharpError }, 'Sharp fallback also failed');
         throw new Error('Failed to crop image with both Python and Sharp');
       }
     }
@@ -49,7 +50,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.cropBoxScore(imageBuffer);
     } catch (error) {
-      console.error('Error cropping box score:', error);
+      logger.error({ err: error }, 'Error cropping box score');
       throw new Error('Failed to crop box score');
     }
   }
@@ -63,7 +64,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.preprocessForOCR(imageBuffer);
     } catch (error) {
-      console.error('Error preprocessing image for OCR:', error);
+      logger.error({ err: error }, 'Error preprocessing image for OCR');
       // Fallback to original image if preprocessing fails
       return imageBuffer;
     }
@@ -78,7 +79,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.preprocessForOCRAlternative(imageBuffer);
     } catch (error) {
-      console.error('Error with alternative preprocessing:', error);
+      logger.error({ err: error }, 'Error with alternative preprocessing');
       return imageBuffer;
     }
   }
@@ -96,7 +97,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.createMultipleVersions(imageBuffer);
     } catch (error) {
-      console.error('Error creating multiple versions:', error);
+      logger.error({ err: error }, 'Error creating multiple versions');
       throw new Error('Failed to create multiple versions');
     }
   }
@@ -120,7 +121,7 @@ export class ImageProcessor {
       const result = await pythonImageProcessor.preprocessBinaryOCR(imageBuffer, denoise);
       return result;
     } catch (error) {
-      console.error('Error with binary OCR preprocessing:', error);
+      logger.error({ err: error }, 'Error with binary OCR preprocessing');
       throw new Error('Failed to preprocess with binary OCR method');
     }
   }
@@ -134,7 +135,7 @@ export class ImageProcessor {
     try {
       return await pythonImageProcessor.getImageDimensions(imageBuffer);
     } catch (error) {
-      console.error('Error getting image dimensions:', error);
+      logger.error({ err: error }, 'Error getting image dimensions');
       throw new Error('Failed to get image dimensions');
     }
   }

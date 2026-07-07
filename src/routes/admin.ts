@@ -3,6 +3,7 @@ import { prisma } from '@/services/database';
 import { authenticateToken } from '@/middleware/auth';
 import { requireAdmin } from '@/middleware/admin';
 import { ApiResponse } from '@/types';
+import logger from '@/utils/logger';
 
 const router = Router();
 
@@ -36,7 +37,7 @@ router.get('/users', async (req, res) => {
       data: users,
     } as ApiResponse);
   } catch (error) {
-    console.error('Error fetching users:', error);
+    logger.error({ err: error }, 'Error fetching users');
     res.status(500).json({
       success: false,
       error: 'Failed to fetch users',
@@ -69,7 +70,7 @@ router.get('/games', async (req, res) => {
       data: games,
     } as ApiResponse);
   } catch (error) {
-    console.error('Error fetching games:', error);
+    logger.error({ err: error }, 'Error fetching games');
     res.status(500).json({
       success: false,
       error: 'Failed to fetch games',
@@ -102,7 +103,7 @@ router.delete('/games/:gameId', async (req, res) => {
       message: 'Game deleted successfully',
     } as ApiResponse);
   } catch (error) {
-    console.error('Error deleting game:', error);
+    logger.error({ err: error }, 'Error deleting game');
     return res.status(500).json({
       success: false,
       error: 'Failed to delete game',
@@ -143,7 +144,7 @@ router.delete('/users/:userId', async (req, res) => {
       message: 'User deleted successfully',
     } as ApiResponse);
   } catch (error) {
-    console.error('Error deleting user:', error);
+    logger.error({ err: error }, 'Error deleting user');
     return res.status(500).json({
       success: false,
       error: 'Failed to delete user',
@@ -201,7 +202,7 @@ router.patch('/users/:userId/role', async (req, res) => {
       message: 'User role updated successfully',
     } as ApiResponse);
   } catch (error) {
-    console.error('Error updating user role:', error);
+    logger.error({ err: error }, 'Error updating user role');
     return res.status(500).json({
       success: false,
       error: 'Failed to update user role',
@@ -268,7 +269,7 @@ router.get('/dashboard', async (req, res) => {
       },
     } as ApiResponse);
   } catch (error) {
-    console.error('Error fetching admin dashboard:', error);
+    logger.error({ err: error }, 'Error fetching admin dashboard');
     res.status(500).json({
       success: false,
       error: 'Failed to fetch admin dashboard',

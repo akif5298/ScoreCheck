@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import supabaseService from './supabase';
 import { supabase } from './supabase';
 import { User, AppleAuthRequest, JwtPayload } from '@/types';
+import logger from '@/utils/logger';
 
 export class AppleAuthService {
   private config = {
@@ -14,46 +15,26 @@ export class AppleAuthService {
 
   async authenticateUser(authRequest: AppleAuthRequest): Promise<{ user: User; token: string }> {
     try {
-      console.log('Auth request:', {
-        nodeEnv: process.env.NODE_ENV,
-        identityToken: authRequest.identityToken,
-        isDev: process.env.NODE_ENV === 'development',
-        isMockToken: authRequest.identityToken === 'mock_identity_token',
-        isDevToken: authRequest.identityToken === 'dev_login_token',
-        jwtSecret: process.env.JWT_SECRET ? 'SET' : 'MISSING'
-      });
-      
       // Development mode: bypass Apple verification for testing
-      if (process.env.NODE_ENV === 'development' && 
+      if (process.env.NODE_ENV === 'development' &&
           (authRequest.identityToken === 'mock_identity_token' || authRequest.identityToken === 'dev_login_token')) {
-        console.log('Using development mode authentication');
-        
         const appleUserId = 'dev_user_' + Date.now();
         const email = authRequest.user?.email || 'dev.user@scorecheck.com';
-        const name = authRequest.user?.name 
+        const name = authRequest.user?.name
           ? `${authRequest.user.name.firstName || ''} ${authRequest.user.name.lastName || ''}`.trim()
           : 'Development User';
 
-        console.log('Development user data:', { appleUserId, email, name });
-
-        // Find or create user
         let user = await supabaseService.findUserByAppleId(appleUserId);
-        console.log('Found existing user:', user);
 
         if (!user) {
-          console.log('Creating new development user');
-          // Create new user
           user = await supabaseService.createUser({
             appleId: appleUserId,
             email: email,
             name: name,
           });
-          console.log('Created new user:', user);
         }
 
-        // Generate JWT token
         const token = this.generateToken(user);
-        console.log('Generated token successfully');
         return { user, token };
       }
 
@@ -94,11 +75,7 @@ export class AppleAuthService {
 
       return { user, token };
     } catch (error) {
-      console.error('Apple authentication error:', error);
-      console.error('Error details:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack : undefined
-      });
+      logger.error({ err: error }, 'Apple authentication failed');
       throw new Error('Apple authentication failed');
     }
   }

@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import pythonImageProcessor from '@/services/pythonImageProcessorWrapper';
+import logger from '@/utils/logger';
 
 const router = Router();
 
@@ -46,7 +47,7 @@ router.get('/python-image-processing', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Health check error:', error);
+    logger.error({ err: error }, 'Health check error');
     return res.status(500).json({
       success: false,
       error: 'Health check failed',
@@ -78,7 +79,7 @@ router.get('/test-hardcoded-image', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Hardcoded image test error:', error);
+    logger.error({ err: error }, 'Hardcoded image test error');
     return res.status(500).json({
       success: false,
       error: 'Hardcoded image test failed',

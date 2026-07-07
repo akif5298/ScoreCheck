@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Database } from '@/types/supabase';
 import dotenv from 'dotenv';
 import { Client } from 'pg';
+import logger from '@/utils/logger';
 
 // Load environment variables
 dotenv.config();
@@ -16,11 +17,11 @@ export const supabase = createClient<Database>(supabaseUrl, supabasePublishableK
 // Create a service role client for admin operations (bypasses RLS)
 const supabaseServiceRole = createClient<Database>(supabaseUrl, supabaseSecretKey);
 
-// Direct PostgreSQL connection for database operations
-const pgClient = new Client({ connectionString: process.env.DATABASE_URL });
+// Direct PostgreSQL connection for database operations (exported for analytics queries)
+export const pgClient = new Client({ connectionString: process.env.DATABASE_URL });
 
 // Initialize connection
-pgClient.connect().catch(console.error);
+pgClient.connect().catch(err => logger.error({ err }, 'PostgreSQL connection failed'));
 
 export class SupabaseService {
   // File Storage Methods
@@ -38,8 +39,6 @@ export class SupabaseService {
         contentType = 'image/jpeg';
       }
       
-      console.log(`Uploading ${fileName} with content type: ${contentType}`);
-      
       // Try Supabase storage with service role (bypasses RLS)
       const { data, error } = await supabaseServiceRole.storage
         .from(bucket)
@@ -49,12 +48,10 @@ export class SupabaseService {
         });
 
       if (error) {
-        console.error('Supabase storage upload failed:', error);
+        logger.error({ err: error }, 'Supabase storage upload failed');
         throw error;
       }
 
-      console.log('Supabase upload successful:', data);
-      
       // For private buckets, we need to generate a signed URL
       // This creates a temporary URL that expires after 1 hour
       const { data: signedUrlData, error: signedUrlError } = await supabaseServiceRole.storage
@@ -62,21 +59,16 @@ export class SupabaseService {
         .createSignedUrl(fileName, 3600); // 1 hour expiry
 
       if (signedUrlError) {
-        console.error('Failed to generate signed URL:', signedUrlError);
+        logger.error({ err: signedUrlError }, 'Failed to generate signed URL');
         // Fallback: try to construct the URL manually
         const projectRef = process.env.SUPABASE_URL?.split('//')[1]?.split('.')[0];
         const fallbackUrl = `https://${projectRef}.supabase.co/storage/v1/object/sign/${bucket}/${fileName}`;
-        console.log('🔍 Using fallback URL:', fallbackUrl);
         return fallbackUrl;
       }
 
-      console.log('🔍 Generated signed URL:', signedUrlData.signedUrl);
-      console.log('🔍 Bucket:', bucket);
-      console.log('🔍 File name:', fileName);
-      
       return signedUrlData.signedUrl;
     } catch (error) {
-      console.error('Supabase storage upload failed:', error);
+      logger.error({ err: error }, 'Supabase storage upload failed');
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to upload image to Supabase: ${errorMessage}`);
     }
@@ -90,11 +82,11 @@ export class SupabaseService {
         .remove([fileName]);
 
       if (error) {
-        console.error('Supabase storage delete failed:', error);
+        logger.error({ err: error }, 'Supabase storage delete failed');
         throw error;
       }
     } catch (error) {
-      console.error('Supabase storage delete failed:', error);
+      logger.error({ err: error }, 'Supabase storage delete failed');
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to delete image from Supabase: ${errorMessage}`);
     }
@@ -129,7 +121,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating user:', error);
+      logger.error({ err: error }, 'Error creating user');
       throw error;
     }
   }
@@ -140,7 +132,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [appleId]);
       return result.rows[0] || null;
     } catch (error) {
-      console.error('Error finding user by Apple ID:', error);
+      logger.error({ err: error }, 'Error finding user by Apple ID');
       return null;
     }
   }
@@ -159,16 +151,24 @@ export class SupabaseService {
       const result = await pgClient.query(query, [userId, ...values]);
       return result.rows[0];
     } catch (error) {
-      console.error('Error updating user:', error);
+      logger.error({ err: error }, 'Error updating user');
       throw error;
     }
+  }
+
+  async getGameHashesByUserId(userId: string): Promise<string[]> {
+    const result = await pgClient.query(
+      `SELECT "imageHash" FROM games WHERE "userId" = $1 AND "imageHash" IS NOT NULL`,
+      [userId],
+    );
+    return result.rows.map((row: any) => row.imageHash as string);
   }
 
   async createGame(gameData: any) {
     try {
       const query = `
-        INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", processed, "createdAt", "updatedAt", "userId")
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), $9)
+        INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "userId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
         RETURNING *
       `;
       const values = [
@@ -179,6 +179,7 @@ export class SupabaseService {
         gameData.homeScore,
         gameData.awayScore,
         gameData.screenshotUrl || null,
+        gameData.imageHash || null,
         gameData.processed || false,
         gameData.userId
       ];
@@ -186,7 +187,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating game:', error);
+      logger.error({ err: error }, 'Error creating game');
       throw error;
     }
   }
@@ -231,25 +232,10 @@ export class SupabaseService {
         playerData.userId
       ];
       
-      // Debug: Log the shooting percentage data being inserted
-      console.log(`🔍 Creating player ${playerData.name} with shooting percentages:`, {
-        fg_percentage: playerData.fg_percentage,
-        three_percentage: playerData.three_percentage,
-        ft_percentage: playerData.ft_percentage,
-        raw_data: {
-          fgMade: playerData.fgMade,
-          fgAttempted: playerData.fgAttempted,
-          threeMade: playerData.threeMade,
-          threeAttempted: playerData.threeAttempted,
-          ftMade: playerData.ftMade,
-          ftAttempted: playerData.ftAttempted
-        }
-      });
-      
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating player:', error);
+      logger.error({ err: error }, 'Error creating player');
       throw error;
     }
   }
@@ -289,16 +275,41 @@ export class SupabaseService {
         teamData.userId
       ];
       
-      console.log('🔍 Creating team with data:', { id: teamData.id, name: teamData.name, gameId: teamData.gameId });
-      
       const result = await pgClient.query(query, values);
-      console.log('✅ Team created successfully:', result.rows[0]);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating team:', error);
+      logger.error({ err: error }, 'Error creating team');
       throw error;
     }
     }
+
+  // Atomically creates a game, its players, and both team records in a single
+  // pgClient transaction. Rolls back all writes if any step fails.
+  async saveGameWithStats(
+    gameData: any,
+    playersData: any[],
+    homeTeamData: any,
+    awayTeamData: any,
+  ): Promise<{ game: any; players: any[] }> {
+    await pgClient.query('BEGIN');
+    try {
+      const game = await this.createGame(gameData);
+      const players = await Promise.all(playersData.map(p => this.createPlayer(p)));
+      await Promise.all([
+        this.createTeam(homeTeamData),
+        this.createTeam(awayTeamData),
+      ]);
+      await pgClient.query('COMMIT');
+      return { game, players };
+    } catch (error) {
+      try {
+        await pgClient.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.error({ err: rollbackErr }, 'Transaction rollback failed after game save error');
+      }
+      throw error;
+    }
+  }
 
   async createPlayerStats(statsData: any) {
     try {
@@ -337,7 +348,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating player stats:', error);
+      logger.error({ err: error }, 'Error creating player stats');
       throw error;
     }
   }
@@ -352,7 +363,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [playerName, userId]);
       return result.rows[0] || null;
     } catch (error) {
-      console.error('Error getting player stats by name:', error);
+      logger.error({ err: error }, 'Error getting player stats by name');
       return null;
     }
   }
@@ -423,7 +434,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error updating player stats:', error);
+      logger.error({ err: error }, 'Error updating player stats');
       throw error;
     }
   }
@@ -439,7 +450,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [userId]);
       return result.rows;
     } catch (error) {
-      console.error('Error getting player stats:', error);
+      logger.error({ err: error }, 'Error getting player stats');
       return [];
     }
   }
@@ -460,7 +471,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [userId]);
       return result.rows;
     } catch (error) {
-      console.error('Error getting games by user ID:', error);
+      logger.error({ err: error }, 'Error getting games by user ID');
       return [];
     }
   }
@@ -480,7 +491,7 @@ export class SupabaseService {
       const result = await pgClient.query(query);
       return result.rows[0];
     } catch (error) {
-      console.error('Error getting dashboard stats:', error);
+      logger.error({ err: error }, 'Error getting dashboard stats');
       return { total_games: 0, total_players: 0, total_teams: 0 };
     }
   }
@@ -498,10 +509,9 @@ export class SupabaseService {
       
       const result = await pgClient.query(query, [userId]);
       const count = parseInt(result.rows[0]?.distinct_players || '0', 10);
-      console.log(`📊 Distinct player count for user ${userId}: ${count}`);
       return count;
     } catch (error) {
-      console.error('Error getting distinct player count:', error);
+      logger.error({ err: error }, 'Error getting distinct player count');
       return 0;
     }
   }
@@ -518,7 +528,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [screenshotUrl, userId]);
       return result.rows[0] || null;
     } catch (error) {
-      console.error('Error getting game by screenshot URL:', error);
+      logger.error({ err: error }, 'Error getting game by screenshot URL');
       return null;
     }
   }
@@ -534,7 +544,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [playerName, userId]);
       return result.rows[0] || null;
     } catch (error) {
-      console.error('Error getting player totals by name:', error);
+      logger.error({ err: error }, 'Error getting player totals by name');
       return null;
     }
   }
@@ -550,7 +560,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [userId]);
       return result.rows;
     } catch (error) {
-      console.error('Error getting player totals by user ID:', error);
+      logger.error({ err: error }, 'Error getting player totals by user ID');
       return [];
     }
   }
@@ -607,7 +617,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error updating player totals:', error);
+      logger.error({ err: error }, 'Error updating player totals');
       throw error;
     }
   }
@@ -652,15 +662,13 @@ export class SupabaseService {
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
-      console.error('Error creating player totals:', error);
+      logger.error({ err: error }, 'Error creating player totals');
       throw error;
     }
   }
 
   async updatePlayerStatsFromTotals(userId: string) {
     try {
-      console.log('🔄 Running bulk update of player_stats with averages from player_totals for user:', userId);
-      
       const query = `
         INSERT INTO public.player_stats (
           id,
@@ -789,10 +797,9 @@ export class SupabaseService {
       `;
       
       const result = await pgClient.query(query, [userId]);
-      console.log(`✅ Bulk update of player_stats completed. Rows affected: ${result.rowCount}`);
       return result;
     } catch (error) {
-      console.error('Error running bulk update of player_stats from player_totals:', error);
+      logger.error({ err: error }, 'Error running bulk update of player_stats from player_totals');
       throw error;
     }
   }
@@ -907,7 +914,7 @@ export class SupabaseService {
     } catch (error) {
       // Rollback on error
       await pgClient.query('ROLLBACK');
-      console.error('Error starting game edit:', error);
+      logger.error({ err: error }, 'Error starting game edit');
       throw error;
     }
   }
@@ -1376,7 +1383,7 @@ export class SupabaseService {
     } catch (error) {
       // Rollback on error
       await pgClient.query('ROLLBACK');
-      console.error('Error updating game:', error);
+      logger.error({ err: error }, 'Error updating game');
       throw error;
     }
   }
@@ -1397,7 +1404,7 @@ export class SupabaseService {
       const result = await pgClient.query(query, [gameId]);
       return result.rows[0] || null;
     } catch (error) {
-      console.error('Error getting game by ID:', error);
+      logger.error({ err: error }, 'Error getting game by ID');
       return null;
     }
   }

@@ -1,5 +1,8 @@
+import logger from '@/utils/logger';
 import { spawn } from 'child_process';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 
 export interface CropCoordinates {
   left: number;
@@ -38,8 +41,6 @@ export class PythonImageProcessorWrapper {
     return new Promise((resolve, reject) => {
       try {
         // Create a temporary file for the input image
-        const fs = require('fs');
-        const os = require('os');
         const tempInputPath = path.join(os.tmpdir(), `input_${Date.now()}.jpg`);
         const tempOutputPath = path.join(os.tmpdir(), `output_${Date.now()}.jpg`);
 
@@ -79,7 +80,7 @@ export class PythonImageProcessorWrapper {
               fs.unlinkSync(tempOutputPath);
             }
           } catch (cleanupError) {
-            console.warn('Warning: Could not clean up temp files:', cleanupError);
+            logger.warn({ err: cleanupError }, 'Could not clean up temp files');
           }
 
           if (code === 0) {
@@ -121,7 +122,7 @@ export class PythonImageProcessorWrapper {
       // Decode base64 data back to buffer
       return Buffer.from(result.data as string, 'base64');
     } catch (error) {
-      console.error('Error cropping image with Python:', error);
+      logger.error({ err: error }, 'Error cropping image with Python');
       throw new Error('Failed to crop image with Python processor');
     }
   }
@@ -139,7 +140,7 @@ export class PythonImageProcessorWrapper {
 
       return Buffer.from(result.data as string, 'base64');
     } catch (error) {
-      console.error('Error cropping box score with Python:', error);
+      logger.error({ err: error }, 'Error cropping box score with Python');
       throw new Error('Failed to crop box score with Python processor');
     }
   }
@@ -157,7 +158,7 @@ export class PythonImageProcessorWrapper {
 
       return Buffer.from(result.data as string, 'base64');
     } catch (error) {
-      console.error('Error preprocessing image for OCR with Python:', error);
+      logger.error({ err: error }, 'Error preprocessing image for OCR with Python');
       throw new Error('Failed to preprocess image for OCR with Python processor');
     }
   }
@@ -175,7 +176,7 @@ export class PythonImageProcessorWrapper {
 
       return Buffer.from(result.data as string, 'base64');
     } catch (error) {
-      console.error('Error with alternative preprocessing using Python:', error);
+      logger.error({ err: error }, 'Error with alternative preprocessing using Python');
       throw new Error('Failed to preprocess image with alternative method using Python processor');
     }
   }
@@ -207,7 +208,7 @@ export class PythonImageProcessorWrapper {
         binary: Buffer.from(data.binary, 'base64'),
       };
     } catch (error) {
-      console.error('Error creating multiple versions with Python:', error);
+      logger.error({ err: error }, 'Error creating multiple versions with Python');
       throw new Error('Failed to create multiple versions with Python processor');
     }
   }
@@ -229,7 +230,7 @@ export class PythonImageProcessorWrapper {
       }
       return { width: data.width, height: data.height };
     } catch (error) {
-      console.error('Error getting image dimensions with Python:', error);
+      logger.error({ err: error }, 'Error getting image dimensions with Python');
       throw new Error('Failed to get image dimensions with Python processor');
     }
   }
@@ -247,7 +248,7 @@ export class PythonImageProcessorWrapper {
 
       return result.data;
     } catch (error) {
-      console.error('Error testing with hardcoded image:', error);
+      logger.error({ err: error }, 'Error testing with hardcoded image');
       throw new Error('Failed to test with hardcoded image');
     }
   }
@@ -282,7 +283,7 @@ export class PythonImageProcessorWrapper {
         threshold: Buffer.from(data.threshold, 'base64'),
       };
     } catch (error) {
-      console.error('Error with binary OCR preprocessing:', error);
+      logger.error({ err: error }, 'Error with binary OCR preprocessing');
       throw new Error('Failed to preprocess with binary OCR method');
     }
   }
@@ -292,7 +293,6 @@ export class PythonImageProcessorWrapper {
    */
   async checkPythonAvailability(): Promise<boolean> {
     try {
-      const { spawn } = require('child_process');
       const pythonProcess = spawn(this.pythonCommand, ['--version']);
       
       return new Promise((resolve) => {
@@ -314,7 +314,6 @@ export class PythonImageProcessorWrapper {
    */
   async checkPythonDependencies(): Promise<{ available: boolean; missing: string[] }> {
     try {
-      const { spawn } = require('child_process');
       const pythonProcess = spawn(this.pythonCommand, [
         '-c',
         'import cv2, PIL, numpy, skimage; print("All packages available")'

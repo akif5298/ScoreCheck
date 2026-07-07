@@ -8,12 +8,15 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 
+import logger from '@/utils/logger';
+
 // Import routes
 import authRoutes from '@/routes/auth';
 import screenshotRoutes from '@/routes/screenshots';
 import analyticsRoutes from '@/routes/analytics';
 import adminRoutes from '@/routes/admin';
 import healthRoutes from '@/routes/health';
+import mappingsRouter from '@/routes/mappings';
 
 // Load environment variables
 dotenv.config();
@@ -46,7 +49,7 @@ app.use((req, res, next) => {
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
     ? ['https://yourdomain.com'] 
-    : ['http://localhost:3000'],
+    : ['http://localhost:3000', 'http://localhost:8080'],
   credentials: true,
 }));
 
@@ -106,6 +109,7 @@ app.use('/api/screenshots', screenshotRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/health', healthRoutes);
+app.use('/api/mappings', mappingsRouter);
 
 // Serve React app for all non-API routes in production or if build exists
 if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
@@ -131,7 +135,7 @@ if (process.env.NODE_ENV === 'production' || fs.existsSync(clientBuildPath)) {
 
 // Global error handler
 app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Global error handler:', error);
+  logger.error({ err: error }, 'Unhandled request error');
 
   // Handle multer errors
   if (error.code === 'LIMIT_FILE_SIZE') {
@@ -176,19 +180,17 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 ScoreCheck server running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  logger.info({ port: PORT, env: process.env.NODE_ENV || 'development' }, 'ScoreCheck server started');
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully');
+  logger.info('SIGTERM received, shutting down gracefully');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully');
+  logger.info('SIGINT received, shutting down gracefully');
   process.exit(0);
 });
 

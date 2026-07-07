@@ -200,36 +200,20 @@ export interface AnalyticsData {
     assists: PlayerStats[];
   };
   gameHighs: {
-    points: any[];
-    rebounds: any[];
-    assists: any[];
-    steals: any[];
-    blocks: any[];
-    threeMade: any[];
+    points: PlayerStats[];
+    rebounds: PlayerStats[];
+    assists: PlayerStats[];
+    steals: PlayerStats[];
+    blocks: PlayerStats[];
+    threeMade: PlayerStats[];
   };
 }
 
-export interface ApiResponse<T = any> {
+export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
   message?: string;
-}
-
-// Vision API related types
-export interface TextBlock {
-  description: string;
-  boundingPoly: {
-    vertices: Array<{ x: number; y: number }>;
-  };
-}
-
-export interface VisionApiResponse {
-  text: string;
-  confidence: number;
-  boundingBox: {
-    vertices: Array<{ x: number; y: number }>;
-  } | null;
 }
 
 export interface ExtractedRow {

@@ -1,4 +1,5 @@
 import { BoxScoreData, PlayerData, TeamData, TeamQuarterTotals, ExtractedRow } from '@/types';
+import logger from '@/utils/logger';
 
 export class BoxScoreParser {
   private extractedRows: ExtractedRow[];
@@ -16,28 +17,22 @@ export class BoxScoreParser {
   parse(): BoxScoreData {
     // Extract team names and scores from the first few rows
     const teamInfo = this.extractTeamInfo();
-    
-    console.log('🔍 BoxScoreParser: Starting parse with team info:', teamInfo);
-    console.log('🔍 BoxScoreParser: Extracted rows count:', this.extractedRows.length);
-    console.log('🔍 BoxScoreParser: Sample rows:', this.extractedRows.slice(0, 3).map(row => ({
-      name: row.playerName,
-      team: row.team,
-      points: row.points
-    })));
-    
+
+    logger.debug({ teamInfo }, 'BoxScoreParser parse started');
+    logger.debug({ rowCount: this.extractedRows.length }, 'BoxScoreParser extracted rows');
+    logger.debug({ sampleRows: this.extractedRows.slice(0, 3).map(row => ({ name: row.playerName, team: row.team, points: row.points })) }, 'BoxScoreParser sample rows');
+
     // Convert extracted rows to player data with team assignments
     const players = this.convertRowsToPlayerData(teamInfo);
-    
-    console.log('🔍 BoxScoreParser: Converted players count:', players.length);
-    console.log('🔍 BoxScoreParser: Final team breakdown:');
+
+    logger.debug({ playerCount: players.length }, 'BoxScoreParser converted players');
     const homeTeamPlayers = players.filter(p => p.team === teamInfo.homeTeam);
     const awayTeamPlayers = players.filter(p => p.team === teamInfo.awayTeam);
-    console.log(`   ${teamInfo.homeTeam}: ${homeTeamPlayers.length} players`);
-    console.log(`   ${teamInfo.awayTeam}: ${awayTeamPlayers.length} players`);
-    
+    logger.debug({ homeTeam: teamInfo.homeTeam, homeCount: homeTeamPlayers.length, awayTeam: teamInfo.awayTeam, awayCount: awayTeamPlayers.length }, 'BoxScoreParser team breakdown');
+
     // Extract team statistics
     const teams = this.extractTeamStats(teamInfo, players);
-    
+
     // Create the final box score data
     const result: BoxScoreData = {
       homeTeam: teamInfo.homeTeam,
@@ -63,27 +58,25 @@ export class BoxScoreParser {
     // Use the actual team assignments from the OCR service
     // The OCR service already correctly assigns players to Team A (P6-P10) and Team B (P1-P5)
     // We should preserve these assignments and just map them to home/away for display purposes
-    
-    console.log('🔍 Extracting team info from OCR data...');
-    
+
     // Count how many players are assigned to each team
     const teamACount = this.extractedRows.filter(row => row.team === 'Team A').length;
     const teamBCount = this.extractedRows.filter(row => row.team === 'Team B').length;
-    
-    console.log(`🔍 Team assignments from OCR: Team A (${teamACount} players), Team B (${teamBCount} players)`);
-    
+
+    logger.debug({ teamACount, teamBCount }, 'BoxScoreParser OCR team assignments');
+
     // For display purposes, we'll map:
     // Team A (P1-P5, usually the top section) → Home Team
     // Team B (P6-P10, usually the bottom section) → Away Team
     // This matches the typical box score layout where home team is shown first
-    
+
     const homeTeam = 'Team A';
     const awayTeam = 'Team B';
     const homeScore = 0; // Will be calculated from player stats
     const awayScore = 0; // Will be calculated from player stats
-    
-    console.log(`🎯 Team mapping: ${homeTeam} (Home) vs ${awayTeam} (Away)`);
-    
+
+    logger.debug({ homeTeam, awayTeam }, 'BoxScoreParser team mapping');
+
     return { homeTeam, awayTeam, homeScore, awayScore };
   }
 
@@ -94,10 +87,10 @@ export class BoxScoreParser {
     const playerDataWithoutTeams = this.extractedRows.map((row, index) => {
       const gameIdFromFile = this.extractGameIdFromFilename();
       const position = this.convertIndexToPosition(index + 1);
-      
+
       // ✅ Preserve the original ID from OCR service, or generate a fallback
       const playerId = row.id || `${gameIdFromFile}-${index + 1}`;
-      
+
       return {
         id: row.id || undefined, // ✅ Preserve the original ID (can be undefined)
         name: row.playerName,
@@ -131,14 +124,13 @@ export class BoxScoreParser {
 
   private distributePlayersToTeams(players: PlayerData[], teamInfo: { homeTeam: string; awayTeam: string }): PlayerData[] {
     if (players.length === 0) return players;
-    
+
     // IMPORTANT: Preserve the original team assignments from the OCR service
     // The OCR service already correctly assigns players to Team A (P1-P5) and Team B (P6-P10)
     // We should NOT randomly redistribute them as this breaks the correct team grouping
-    
-    console.log('🔍 Preserving original team assignments from OCR service...');
-    console.log('🔍 Players with original teams:', players.map(p => ({ name: p.name, team: p.team })));
-    
+
+    logger.debug({ players: players.map(p => ({ name: p.name, team: p.team })) }, 'BoxScoreParser preserving original team assignments');
+
     // Map the original Team A/Team B assignments to the display team names
     const updatedPlayers = players.map(player => {
       if (player.team === 'Team A') {
@@ -147,18 +139,18 @@ export class BoxScoreParser {
         return { ...player, team: teamInfo.awayTeam };
       } else {
         // Fallback for any players without team assignment
-        console.warn(`⚠️ Player ${player.name} has no team assignment, defaulting to ${teamInfo.homeTeam}`);
+        logger.warn({ playerName: player.name, defaultTeam: teamInfo.homeTeam }, 'Player has no team assignment, defaulting');
         return { ...player, team: teamInfo.homeTeam };
       }
     });
-    
+
     // Count players per team for logging
     const homeTeamCount = updatedPlayers.filter(p => p.team === teamInfo.homeTeam).length;
     const awayTeamCount = updatedPlayers.filter(p => p.team === teamInfo.awayTeam).length;
-    
-    console.log(`🎯 Preserved team assignments: ${teamInfo.homeTeam} (${homeTeamCount}), ${teamInfo.awayTeam} (${awayTeamCount})`);
-    console.log('🔍 Final team assignments:', updatedPlayers.map(p => ({ name: p.name, team: p.team })));
-    
+
+    logger.debug({ homeTeam: teamInfo.homeTeam, homeTeamCount, awayTeam: teamInfo.awayTeam, awayTeamCount }, 'BoxScoreParser preserved team assignments');
+    logger.debug({ assignments: updatedPlayers.map(p => ({ name: p.name, team: p.team })) }, 'BoxScoreParser final team assignments');
+
     return updatedPlayers;
   }
 
@@ -176,36 +168,36 @@ export class BoxScoreParser {
     // P6-P10 (Team B): 6=PG, 7=SG, 8=SF, 9=PF, 10=C
     const positionMap: { [key: number]: string } = {
       1: 'PG', 6: 'PG',
-      2: 'SG', 7: 'SG', 
+      2: 'SG', 7: 'SG',
       3: 'SF', 8: 'SF',
       4: 'PF', 9: 'PF',
       5: 'C', 10: 'C'
     };
-    
+
     return positionMap[index] || 'PG'; // Default to PG if not in map
   }
 
   private extractTeamStats(teamInfo: { homeTeam: string; awayTeam: string }, players: PlayerData[]): TeamData[] {
     const teams: TeamData[] = [];
-    
+
     // Calculate team totals from player data
     const homeTeamStats = this.calculateTeamStats(teamInfo.homeTeam, true, players);
     const awayTeamStats = this.calculateTeamStats(teamInfo.awayTeam, false, players);
-    
+
     if (homeTeamStats) teams.push(homeTeamStats);
     if (awayTeamStats) teams.push(awayTeamStats);
-    
+
     return teams;
   }
 
   private calculateTeamStats(teamName: string, isHome: boolean, players: PlayerData[]): TeamData | null {
     // Calculate team totals by summing up player statistics
     const teamPlayers = players.filter(player => player.team === teamName);
-    
+
     if (teamPlayers.length === 0) {
       return null;
     }
-    
+
     const totals = teamPlayers.reduce((acc, player) => ({
       points: acc.points + player.points,
       rebounds: acc.rebounds + player.rebounds,

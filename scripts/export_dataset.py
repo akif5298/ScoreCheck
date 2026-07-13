@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TRAINING_DATA = ROOT / "eval" / "training_data.json"
+GROUND_TRUTH  = ROOT / "eval" / "ground_truth.json"
 SCREENSHOTS   = ROOT / "eval" / "screenshots"
 TRAIN_OUT     = ROOT / "eval" / "finetune_train.jsonl"
 VAL_OUT       = ROOT / "eval" / "finetune_val.jsonl"
@@ -129,12 +130,24 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Filter out entries whose screenshot file is missing
+    # Held-out eval set: never train on images in ground_truth.json
+    eval_files: set[str] = set()
+    if GROUND_TRUTH.exists():
+        with open(GROUND_TRUTH, encoding="utf-8") as f:
+            eval_files = {e["screenshotFile"] for e in json.load(f)}
+
+    # Filter: missing screenshots, unreviewed entries, and eval-set images
     valid, skipped = [], 0
     for entry in entries:
         img_path = SCREENSHOTS / entry["screenshotFile"]
         if not img_path.exists():
             print(f"Warning: screenshot not found, skipping — {entry['screenshotFile']}")
+            skipped += 1
+        elif entry.get("reviewed") is False:
+            print(f"Warning: not yet reviewed, skipping — {entry['screenshotFile']}")
+            skipped += 1
+        elif entry["screenshotFile"] in eval_files:
+            print(f"Warning: in held-out eval set, skipping — {entry['screenshotFile']}")
             skipped += 1
         else:
             valid.append(entry)

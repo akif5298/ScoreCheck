@@ -121,9 +121,11 @@ def run_ocr(filename: str):
     if not img_path.exists():
         return {'error': f'File not found: {filename}'}
     try:
+        # Generous timeout: the model may run partly on CPU (fp16 exceeds 6GB
+        # VRAM), and hard images trigger per-row retries — 3+ min is normal.
         result = subprocess.run(
             ['npm', 'run', 'extract', '--', str(img_path)],
-            capture_output=True, text=True, timeout=180, cwd=str(ROOT),
+            capture_output=True, text=True, timeout=600, cwd=str(ROOT),
             shell=(sys.platform == 'win32'),
         )
         # npm prints preamble lines; find the last line that is valid JSON
@@ -141,7 +143,7 @@ def run_ocr(filename: str):
         err = (result.stderr.strip() or result.stdout.strip() or 'No JSON found in output')
         return {'error': err[-400:]}
     except subprocess.TimeoutExpired:
-        return {'error': 'OCR timed out (> 180 s)'}
+        return {'error': 'OCR timed out (> 600 s)'}
     except Exception as e:
         return {'error': str(e)}
 
@@ -722,7 +724,7 @@ async function runOCR() {
   const btn = document.getElementById('ocr-btn');
   btn.disabled = true;
   btn.textContent = 'Scanning…';
-  document.getElementById('ocr-status').textContent = 'May take 10–30 s…';
+  document.getElementById('ocr-status').textContent = 'May take 2–5 min (model partly on CPU)…';
   setStatus('');
 
   const res  = await fetch('/api/extract', {

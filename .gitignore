@@ -197,6 +197,11 @@ eval/raw_output.json
 # Local model files (large — should never be committed)
 *.gguf
 
+# Fine-tuning outputs (multi-GB: checkpoints, merged safetensors, GGUF exports)
+scorecheck-ocr/
+scorecheck-ocr_gguf/
+unsloth_compiled_cache/
+
 # graphify derived knowledge-graph output (regenerate with `graphify update .`)
 graphify-out/
 

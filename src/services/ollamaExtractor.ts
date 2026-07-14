@@ -306,10 +306,11 @@ async function ollamaChat(
   imageB64: string,
   prompt: string,
   model: string,
-  opts: { timeoutMs?: number; numPredict?: number; format?: unknown } = {},
+  opts: { timeoutMs?: number; numPredict?: number; format?: unknown; numCtx?: number | undefined } = {},
 ): Promise<string> {
   const timeoutMs  = opts.timeoutMs  ?? TIMEOUT_MS;
   const numPredict = opts.numPredict ?? 2048;
+  const numCtx     = opts.numCtx     ?? 4096;
   // format is opt-in: pass null/undefined to skip (needed for qwen2.5vl Ollama 0.30.x grammar bug)
   const format     = opts.format ?? null;
 
@@ -321,7 +322,7 @@ async function ollamaChat(
       model,
       messages: [{ role: 'user', content: prompt, images: [imageB64] }],
       stream: false,
-      options: { num_predict: numPredict, num_ctx: 4096 },
+      options: { num_predict: numPredict, num_ctx: numCtx },
     };
     if (format !== null) body['format'] = format;
 
@@ -454,15 +455,26 @@ async function extractRaw(
   imageBuffer: Buffer,
   model: string,
   startTime: number,
+  opts: { resizeLongestEdge?: number; numCtx?: number; prompt?: string } = {},
 ): Promise<OllamaExtractionResult> {
-  const b64 = imageBuffer.toString('base64');
+  // Optionally resize to match the fine-tuned model's training distribution
+  // (--img-size in scripts/finetune.py). Also keeps image token count within
+  // the context window: native-res screenshots produce ~3800 image tokens.
+  const inputBuffer = opts.resizeLongestEdge
+    ? await sharp(imageBuffer)
+        .resize(opts.resizeLongestEdge, opts.resizeLongestEdge, { fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 92 })
+        .toBuffer()
+    : imageBuffer;
+  const b64 = inputBuffer.toString('base64');
   let lastError: OllamaExtractionError | undefined;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      const rawModelOutput = await ollamaChat(b64, EXTRACTION_PROMPT, model, {
+      const rawModelOutput = await ollamaChat(b64, opts.prompt ?? EXTRACTION_PROMPT, model, {
         timeoutMs:  TIMEOUT_MS,
         numPredict: 4096,
+        numCtx:     opts.numCtx,
       });
 
       const parsed = extractJSON(rawModelOutput);
@@ -496,11 +508,80 @@ async function extractRaw(
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
+// Fine-tuned models are trained on FULL screenshots at 1280px longest edge
+// (scripts/finetune.py --img-size), so single-pass full-image inference is
+// their in-distribution path — measured 90.7% field accuracy vs 78.9% through
+// the crop pipeline on the 10-image holdout set, at ~24s vs ~41s.
+const FINE_TUNED_MODEL_PREFIX = 'scorecheck-ocr';
+// MUST match --img-size used in scripts/finetune.py for the deployed model.
+// Current model (round 2) was trained at 1280; 6 GB VRAM cannot train larger —
+// a 1536 model needs a cloud GPU (Kaggle P100), then update this to match.
+const FINE_TUNED_IMG_EDGE     = 1280;
+const FINE_TUNED_NUM_CTX      = 8192;
+
+// MUST stay byte-identical to EXTRACTION_PROMPT in scripts/export_dataset.py —
+// the fine-tuned model is prompt-sensitive and was trained on exactly this
+// text. (Note: no Grade column; the training data does not include grades.)
+const FINE_TUNED_PROMPT = `You are analyzing a screenshot of an NBA 2K basketball game box score.
+
+Extract ALL player statistics from the box score table. There are exactly 10 players (5 per team), listed top to bottom.
+
+The columns are:
+- Player name (the gamertag/username)
+- PTS (points)
+- REB (rebounds)
+- AST (assists)
+- STL (steals)
+- BLK (blocks)
+- TO (turnovers)
+- PF (personal fouls)
+- FGM/FGA (field goals made / attempted)
+- 3PM/3PA (three-pointers made / attempted)
+- FTM/FTA (free throws made / attempted)
+
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
+{
+  "players": [
+    {
+      "name": "PLAYER_NAME",
+      "points": 0,
+      "rebounds": 0,
+      "assists": 0,
+      "steals": 0,
+      "blocks": 0,
+      "turnovers": 0,
+      "fouls": 0,
+      "fgMade": 0,
+      "fgAttempted": 0,
+      "threeMade": 0,
+      "threeAttempted": 0,
+      "ftMade": 0,
+      "ftAttempted": 0
+    }
+  ]
+}`;
+
 export async function extractBoxScore(
   imageBuffer: Buffer,
   model = DEFAULT_MODEL,
 ): Promise<OllamaExtractionResult> {
   const start = Date.now();
+
+  // Full-image first for the fine-tuned model; fall through to the crop
+  // pipeline only when a row goes missing (rare, ~1/10 images).
+  if (model.startsWith(FINE_TUNED_MODEL_PREFIX)) {
+    try {
+      const result = await extractRaw(imageBuffer, model, start, {
+        resizeLongestEdge: FINE_TUNED_IMG_EDGE,
+        numCtx:            FINE_TUNED_NUM_CTX,
+        prompt:            FINE_TUNED_PROMPT,
+      });
+      if (result.players.length >= 10) return result;
+      console.warn(`[Ollama] Full-image returned ${result.players.length}/10 — falling back to crop pipeline`);
+    } catch (err) {
+      console.warn('[Ollama] Full-image extraction failed — falling back to crop pipeline', err instanceof Error ? err.message : String(err));
+    }
+  }
 
   try {
     const headerBuf = await cropRegion(imageBuffer, HEADER_CROP);

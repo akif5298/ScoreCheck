@@ -1,9 +1,32 @@
-# ScoreCheck custom OCR model
+# ScoreCheck custom OCR model (fine-tuned Qwen2.5-VL-3B, QLoRA via Unsloth)
 # Usage: ollama create scorecheck-ocr:latest -f Modelfile
-# Requires: scorecheck-ocr-unsloth.Q4_K_M.gguf in the project root
-# Generate the GGUF by running: npm run finetune
+# Requires the GGUF files produced by `npm run finetune` in ./scorecheck-ocr_gguf/
+# Both FROM lines are required: the language model AND the vision projector
+# (mmproj) — without the projector the model cannot see images.
 
-FROM ./scorecheck-ocr-unsloth.Q4_K_M.gguf
+FROM ./scorecheck-ocr_gguf/qwen2.5-vl-3b-instruct.Q4_K_M.gguf
+FROM ./scorecheck-ocr_gguf/qwen2.5-vl-3b-instruct.BF16-mmproj.gguf
+
+# Qwen2.5-VL chat template (from the Unsloth-generated Modelfile)
+TEMPLATE """{{- if .System -}}
+<|im_start|>system
+{{ .System }}<|im_end|>
+{{- end -}}
+{{- range $i, $_ := .Messages }}
+{{- $last := eq (len (slice $.Messages $i)) 1 -}}
+{{- if eq .Role "user" }}
+<|im_start|>user
+{{ .Content }}<|im_end|>
+{{- else if eq .Role "assistant" }}
+<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ if not $last }}<|im_end|>
+{{- else -}}<|im_end|>{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (ne .Role "assistant") $last }}
+<|im_start|>assistant
+{{ end -}}
+{{- end }}"""
 
 SYSTEM """You are a specialized NBA 2K26 box score extractor.
 When given a box score screenshot, output ONLY valid JSON — no markdown,
@@ -12,5 +35,6 @@ Always extract exactly 10 players when all are visible."""
 
 PARAMETER temperature 0
 PARAMETER num_predict 4096
+PARAMETER num_ctx 8192
 PARAMETER stop "<|endoftext|>"
 PARAMETER stop "<|im_end|>"

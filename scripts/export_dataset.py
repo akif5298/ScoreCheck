@@ -104,8 +104,11 @@ def entry_to_jsonl(entry: dict) -> dict:
                 ],
             },
             {
+                # Parts-format (not a bare string) so every message's `content`
+                # column has the same arrow type — load_dataset("json") fails
+                # on mixed string/array schemas.
                 "role": "assistant",
-                "content": assistant_json,
+                "content": [{"type": "text", "text": assistant_json}],
             },
         ],
         "image": screenshot_path,

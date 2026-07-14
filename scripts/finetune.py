@@ -38,6 +38,7 @@ from pathlib import Path
 # ── Unsloth must be imported before transformers ───────────────────────────────
 try:
     from unsloth import FastVisionModel  # type: ignore
+    from unsloth.trainer import UnslothVisionDataCollator  # type: ignore
 except ImportError:
     print(
         "\nError: unsloth is not installed.\n"
@@ -145,17 +146,28 @@ print()
 
 def format_example(example: dict) -> dict:
     """
-    Convert one JSONL entry into the format unsloth's SFTTrainer expects.
-    Loads the image from disk and attaches it alongside the text messages.
+    Convert one JSONL entry into the conversation format Unsloth's vision
+    collator expects: {"messages": [...]} with the PIL image embedded in the
+    user turn's image content part. The collator applies the chat template
+    and image processing itself — no pre-tokenization here.
     """
     image = Image.open(example["image"]).convert("RGB")
-    messages = example["messages"]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    return {"text": text, "images": [image]}
+    messages = []
+    for msg in example["messages"]:
+        parts = []
+        for part in msg["content"]:
+            if part["type"] == "image":
+                parts.append({"type": "image", "image": image})
+            else:
+                parts.append(part)
+        messages.append({"role": msg["role"], "content": parts})
+    return {"messages": messages}
 
 
-train_formatted = train_dataset.map(format_example, remove_columns=train_dataset.column_names)
-val_formatted   = val_dataset.map(format_example,   remove_columns=val_dataset.column_names)
+# Plain Python lists (not datasets.Dataset.map) — PIL images can't round-trip
+# through arrow, and the vision collator consumes dicts directly.
+train_formatted = [format_example(ex) for ex in train_dataset]
+val_formatted   = [format_example(ex) for ex in val_dataset]
 
 # ── Training config ────────────────────────────────────────────────────────────
 
@@ -173,9 +185,13 @@ training_args = SFTConfig(
     load_best_model_at_end=True,
     metric_for_best_model="eval_loss",
     greater_is_better=False,
-    fp16=True,              # fp16 for RTX 40xx laptop GPUs; switch to bf16 for A100/H100
+    bf16=True,              # RTX 40xx (Ada) supports bfloat16 natively; Unsloth loads the model in bf16
     max_seq_length=args.max_seq,
-    dataset_text_field="text",
+    # Vision fine-tuning: the collator does all preparation, so TRL's own
+    # dataset preprocessing must be disabled.
+    remove_unused_columns=False,
+    dataset_text_field="",
+    dataset_kwargs={"skip_prepare_dataset": True},
     report_to="none",       # no wandb / tensorboard dependency
     dataloader_num_workers=0,
 )
@@ -183,12 +199,15 @@ training_args = SFTConfig(
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
+    data_collator=UnslothVisionDataCollator(model, tokenizer),
     train_dataset=train_formatted,
     eval_dataset=val_formatted,
     args=training_args,
 )
 
 # ── Train ──────────────────────────────────────────────────────────────────────
+
+FastVisionModel.for_training(model)
 
 print("Starting training...")
 try:

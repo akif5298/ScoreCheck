@@ -76,9 +76,12 @@ npm run eval -- --pipeline=ollama --models=scorecheck-ocr:latest
 
 | GPU | Action |
 |---|---|
-| RTX 4050 (6 GB) | `npm run finetune -- --batch 1 --grad-acc 16 --max-seq 1024` |
-| RTX 4060+ (8 GB) | Default settings work |
-| No suitable GPU | Use Kaggle free P100 (16 GB) — see `scripts/finetune.py` for upload instructions |
+| RTX 4050 (6 GB) | `python scripts/finetune.py --batch 1 --grad-acc 8 --max-seq 4096 --img-size 1280 --epochs 10` — 1280px is the 6 GB ceiling (1536px OOMs even at `--max-seq 3200`) |
+| RTX 4060+ (8 GB) | 1536px likely fits: `--img-size 1536 --max-seq 3200` |
+| Higher resolution on 6 GB | Kaggle free P100 (16 GB) — see `scripts/finetune.py` for upload instructions. JSONL image paths are repo-relative, so upload `eval/finetune_*.jsonl` + `eval/screenshots/` preserving the `eval/` layout |
+
+> Invoke `python scripts/finetune.py ...` directly, not `npm run finetune -- ...` — npm
+> swallows the `--flag` names and passes only bare values.
 
 ## Keeping the model warm
 

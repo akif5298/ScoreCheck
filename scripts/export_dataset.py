@@ -90,7 +90,9 @@ def gt_player_to_output(p: dict) -> dict:
 
 def entry_to_jsonl(entry: dict) -> dict:
     """Convert one training_data.json entry to HuggingFace VLM conversation format."""
-    screenshot_path = str(SCREENSHOTS / entry["screenshotFile"])
+    # Relative path so the JSONL is portable (Kaggle, another machine);
+    # finetune.py resolves it against the repo root.
+    screenshot_path = f"eval/screenshots/{entry['screenshotFile']}"
     players_output  = [gt_player_to_output(p) for p in entry["players"]]
     assistant_json  = json.dumps({"players": players_output}, separators=(",", ":"))
 

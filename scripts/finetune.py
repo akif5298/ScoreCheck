@@ -131,6 +131,9 @@ def load_and_filter(jsonl_path: Path, split_name: str):
     valid_indices = []
     for i, example in enumerate(raw):
         img_path = example.get("image", "")
+        # JSONL stores repo-relative paths (portable to Kaggle etc.)
+        if img_path and not Path(img_path).is_absolute():
+            img_path = str(ROOT / img_path)
         if not img_path or not Path(img_path).exists():
             print(f"Warning [{split_name}]: image not found, skipping — {img_path}")
         else:
@@ -155,7 +158,10 @@ def format_example(example: dict) -> dict:
     user turn's image content part. The collator applies the chat template
     and image processing itself — no pre-tokenization here.
     """
-    image = Image.open(example["image"]).convert("RGB")
+    img_path = Path(example["image"])
+    if not img_path.is_absolute():
+        img_path = ROOT / img_path
+    image = Image.open(img_path).convert("RGB")
     messages = []
     for msg in example["messages"]:
         parts = []

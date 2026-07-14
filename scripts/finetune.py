@@ -66,6 +66,10 @@ parser.add_argument("--batch",    type=int,   default=1,    help="Per-device bat
 parser.add_argument("--grad-acc", type=int,   default=8,    help="Gradient accumulation steps (effective batch = batch × grad-acc)")
 parser.add_argument("--lr",       type=float, default=2e-4, help="Learning rate")
 parser.add_argument("--max-seq",  type=int,   default=2048, help="Max sequence length (lower if OOM)")
+parser.add_argument("--img-size", type=int,   default=1280,
+                    help="Longest image edge during training (0 = native resolution). "
+                         "The collator's default is 512, which makes the dense middle "
+                         "stat columns illegible — keep >= 1024 for box scores.")
 args = parser.parse_args()
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -199,7 +203,15 @@ training_args = SFTConfig(
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
-    data_collator=UnslothVisionDataCollator(model, tokenizer),
+    data_collator=UnslothVisionDataCollator(
+        model,
+        tokenizer,
+        # Explicit size: the "min" default falls back to 512px on Qwen2.5-VL
+        # (dynamic-resolution model, no fixed image_size in config), which
+        # blurs the small stat digits the model must read.
+        resize=(args.img_size if args.img_size > 0 else "max"),
+        resize_dimension="max",  # scale by the longest edge
+    ),
     train_dataset=train_formatted,
     eval_dataset=val_formatted,
     args=training_args,

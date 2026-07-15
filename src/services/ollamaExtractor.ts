@@ -460,10 +460,13 @@ async function extractRaw(
   // Optionally resize to match the fine-tuned model's training distribution
   // (--img-size in scripts/finetune.py). Also keeps image token count within
   // the context window: native-res screenshots produce ~3800 image tokens.
+  // PNG (lossless): training feeds raw resized pixels, so JPEG re-encoding at
+  // inference would add compression artifacts to exactly the small text that
+  // matters most (gamertags).
   const inputBuffer = opts.resizeLongestEdge
     ? await sharp(imageBuffer)
         .resize(opts.resizeLongestEdge, opts.resizeLongestEdge, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 92 })
+        .png()
         .toBuffer()
     : imageBuffer;
   const b64 = inputBuffer.toString('base64');
@@ -518,6 +521,10 @@ const FINE_TUNED_MODEL_PREFIX = 'scorecheck-ocr';
 // a 1536 model needs a cloud GPU (Kaggle P100), then update this to match.
 const FINE_TUNED_IMG_EDGE     = 1280;
 const FINE_TUNED_NUM_CTX      = 8192;
+// Flip to true ONLY when the deployed model was trained with --table-crop
+// (scripts/finetune.py). Cropping at inference against a model trained on
+// full screenshots — or vice versa — is a train/test distribution mismatch.
+const FINE_TUNED_TABLE_CROP   = false;
 
 // MUST stay byte-identical to EXTRACTION_PROMPT in scripts/export_dataset.py —
 // the fine-tuned model is prompt-sensitive and was trained on exactly this
@@ -571,7 +578,10 @@ export async function extractBoxScore(
   // pipeline only when a row goes missing (rare, ~1/10 images).
   if (model.startsWith(FINE_TUNED_MODEL_PREFIX)) {
     try {
-      const result = await extractRaw(imageBuffer, model, start, {
+      const fineTunedInput = FINE_TUNED_TABLE_CROP
+        ? await cropRegion(imageBuffer, TABLE_CROP)
+        : imageBuffer;
+      const result = await extractRaw(fineTunedInput, model, start, {
         resizeLongestEdge: FINE_TUNED_IMG_EDGE,
         numCtx:            FINE_TUNED_NUM_CTX,
         prompt:            FINE_TUNED_PROMPT,

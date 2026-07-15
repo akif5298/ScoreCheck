@@ -70,9 +70,19 @@ parser.add_argument("--img-size", type=int,   default=1280,
                     help="Longest image edge during training (0 = native resolution). "
                          "The collator's default is 512, which makes the dense middle "
                          "stat columns illegible — keep >= 1024 for box scores.")
+parser.add_argument("--table-crop", action=argparse.BooleanOptionalAction, default=True,
+                    help="Crop to the stat-table region before resizing — concentrates "
+                         "the pixel budget on the text (~1.66x glyph size at the same "
+                         "img-size). MUST match FINE_TUNED_TABLE_CROP in "
+                         "src/services/ollamaExtractor.ts for the deployed model.")
 args = parser.parse_args()
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Stat-table region on a 3840x2160 reference frame, scaled to each image's
+# actual size. MUST stay in sync with TABLE_CROP in src/services/ollamaExtractor.ts.
+REF_W, REF_H = 3840, 2160
+TABLE_CROP = (1218, 434, 3525, 1542)  # x1, y1, x2, y2
 
 # ── Validate inputs ────────────────────────────────────────────────────────────
 
@@ -99,7 +109,8 @@ print(f"Validation set: {len(val_path.read_text().strip().splitlines())} example
 print(f"Base model    : {args.model}")
 print(f"Output dir    : {args.output}")
 print(f"Epochs        : {args.epochs}  |  batch {args.batch} × grad-acc {args.grad_acc}  |  lr {args.lr}")
-print(f"Max seq len   : {args.max_seq}\n")
+print(f"Max seq len   : {args.max_seq}")
+print(f"Image input   : {'table crop' if args.table_crop else 'full screenshot'} @ {args.img_size}px longest edge\n")
 
 # ── Load model ─────────────────────────────────────────────────────────────────
 
@@ -162,6 +173,12 @@ def format_example(example: dict) -> dict:
     if not img_path.is_absolute():
         img_path = ROOT / img_path
     image = Image.open(img_path).convert("RGB")
+    if args.table_crop:
+        sx, sy = image.width / REF_W, image.height / REF_H
+        image = image.crop((
+            round(TABLE_CROP[0] * sx), round(TABLE_CROP[1] * sy),
+            round(TABLE_CROP[2] * sx), round(TABLE_CROP[3] * sy),
+        ))
     messages = []
     for msg in example["messages"]:
         parts = []

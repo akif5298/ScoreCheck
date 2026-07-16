@@ -179,6 +179,8 @@ export interface ExtractedPlayer {
   threeAttempted: number;
   ftMade: number;
   ftAttempted: number;
+  /** Visual row position 1-10 (slot-trained models only; absent on older models). */
+  slot?: number | undefined;
 }
 
 export interface OllamaExtractionResult {
@@ -243,7 +245,9 @@ function parsePlayer(raw: unknown): ExtractedPlayer {
     for (const k of keys) if (p[k] !== undefined) return toNum(p[k]);
     return 0;
   };
+  const rawSlot = Number(p['slot']);
   return {
+    ...(Number.isInteger(rawSlot) && rawSlot >= 1 && rawSlot <= 10 ? { slot: rawSlot } : {}),
     name:           String(p['name'] ?? p['player'] ?? p['playerName'] ?? ''),
     grade:          String(p['grade'] ?? p['teammateGrade'] ?? p['teamGrade'] ?? ''),
     points:         pick('points', 'pts', 'PTS'),
@@ -511,6 +515,30 @@ async function extractRaw(
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
+/**
+ * Place slot-numbered players into their visual row positions, padding any
+ * missing slot with an empty row. Prevents a skipped row from shifting every
+ * later player up one position (e.g. the SG landing in the PG's slot, or a
+ * team-B player being counted as team A). Only applies when every extracted
+ * player carries a valid, unique slot — otherwise returns the list unchanged
+ * (older models don't emit slots).
+ */
+export function alignBySlots(players: ExtractedPlayer[]): ExtractedPlayer[] {
+  if (players.length === 0 || players.length > 10) return players;
+  const bySlot = new Map<number, ExtractedPlayer>();
+  for (const p of players) {
+    if (p.slot === undefined || bySlot.has(p.slot)) return players;
+    bySlot.set(p.slot, p);
+  }
+  if (bySlot.size === 10) return Array.from({ length: 10 }, (_, i) => bySlot.get(i + 1) as ExtractedPlayer);
+  const emptyRow = (slot: number): ExtractedPlayer => ({
+    slot, name: '', grade: '',
+    points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 0, fouls: 0,
+    fgMade: 0, fgAttempted: 0, threeMade: 0, threeAttempted: 0, ftMade: 0, ftAttempted: 0,
+  });
+  return Array.from({ length: 10 }, (_, i) => bySlot.get(i + 1) ?? emptyRow(i + 1));
+}
+
 // Fine-tuned models are trained on FULL screenshots at 1280px longest edge
 // (scripts/finetune.py --img-size), so single-pass full-image inference is
 // their in-distribution path — measured 90.7% field accuracy vs 78.9% through
@@ -524,14 +552,15 @@ const FINE_TUNED_NUM_CTX      = 8192;
 // Flip to true ONLY when the deployed model was trained with --table-crop
 // (scripts/finetune.py). Cropping at inference against a model trained on
 // full screenshots — or vice versa — is a train/test distribution mismatch.
-const FINE_TUNED_TABLE_CROP   = false;
+// Round-3 model (2026-07-16) was trained with --table-crop @ 1280px.
+const FINE_TUNED_TABLE_CROP   = true;
 
 // MUST stay byte-identical to EXTRACTION_PROMPT in scripts/export_dataset.py —
 // the fine-tuned model is prompt-sensitive and was trained on exactly this
 // text. (Note: no Grade column; the training data does not include grades.)
 const FINE_TUNED_PROMPT = `You are analyzing a screenshot of an NBA 2K basketball game box score.
 
-Extract ALL player statistics from the box score table. There are exactly 10 players (5 per team), listed top to bottom.
+Extract ALL player statistics from the box score table. There are exactly 10 players (5 per team), listed top to bottom. Number each row by its visual position from the top: the first team's rows are slots 1-5, the second team's rows are slots 6-10. If a row is unreadable, skip it and keep the remaining rows' slot numbers unchanged — never renumber.
 
 The columns are:
 - Player name (the gamertag/username)
@@ -550,6 +579,7 @@ Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {
   "players": [
     {
+      "slot": 1,
       "name": "PLAYER_NAME",
       "points": 0,
       "rebounds": 0,
@@ -586,7 +616,18 @@ export async function extractBoxScore(
         numCtx:            FINE_TUNED_NUM_CTX,
         prompt:            FINE_TUNED_PROMPT,
       });
-      if (result.players.length >= 10) return result;
+      // Accept 8-9 players (review UI handles a missing row). A temp-0 retry
+      // is deterministic, and the crop pipeline is out-of-distribution for a
+      // table-crop-trained model — falling back to it costs minutes and tends
+      // to produce worse rows than simply accepting the near-complete result.
+      // Slot-trained models let us pad the SPECIFIC missing row so later
+      // players keep their correct positions and team assignment.
+      if (result.players.length >= 8) {
+        if (result.players.length < 10) {
+          console.warn(`[Ollama] Full-image returned ${result.players.length}/10 — accepting partial result`);
+        }
+        return { ...result, players: alignBySlots(result.players) };
+      }
       console.warn(`[Ollama] Full-image returned ${result.players.length}/10 — falling back to crop pipeline`);
     } catch (err) {
       console.warn('[Ollama] Full-image extraction failed — falling back to crop pipeline', err instanceof Error ? err.message : String(err));

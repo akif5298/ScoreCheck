@@ -29,7 +29,7 @@ VAL_OUT       = ROOT / "eval" / "finetune_val.jsonl"
 
 EXTRACTION_PROMPT = """You are analyzing a screenshot of an NBA 2K basketball game box score.
 
-Extract ALL player statistics from the box score table. There are exactly 10 players (5 per team), listed top to bottom.
+Extract ALL player statistics from the box score table. There are exactly 10 players (5 per team), listed top to bottom. Number each row by its visual position from the top: the first team's rows are slots 1-5, the second team's rows are slots 6-10. If a row is unreadable, skip it and keep the remaining rows' slot numbers unchanged — never renumber.
 
 The columns are:
 - Player name (the gamertag/username)
@@ -48,6 +48,7 @@ Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {
   "players": [
     {
+      "slot": 1,
       "name": "PLAYER_NAME",
       "points": 0,
       "rebounds": 0,
@@ -71,6 +72,7 @@ Return ONLY valid JSON — no markdown, no explanation, no code fences:
 def gt_player_to_output(p: dict) -> dict:
     """Map a ground-truth player entry to the ollamaExtractor output schema."""
     return {
+        "slot":           p["slot"],
         "name":           p["expectedName"],
         "points":         p["points"],
         "rebounds":       p["rebounds"],

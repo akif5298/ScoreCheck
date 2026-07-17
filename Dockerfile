@@ -1,5 +1,5 @@
 # Node 22 to match CI and Vite/TanStack Start requirements
-FROM node:22-alpine
+FROM node:22
 
 # Native-module build deps (canvas needs cairo/pango; Prisma needs OpenSSL)
 RUN apk add --no-cache \

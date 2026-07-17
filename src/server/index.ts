@@ -15,7 +15,6 @@ import authRoutes from '@/routes/auth';
 import screenshotRoutes from '@/routes/screenshots';
 import analyticsRoutes from '@/routes/analytics';
 import adminRoutes from '@/routes/admin';
-import healthRoutes from '@/routes/health';
 import mappingsRouter from '@/routes/mappings';
 
 // Load environment variables
@@ -111,7 +110,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/screenshots', screenshotRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
-app.use('/api/health', healthRoutes);
 app.use('/api/mappings', mappingsRouter);
 
 // Serve the SPA shell for all non-API routes when a client build exists

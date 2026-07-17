@@ -125,13 +125,13 @@ Copy `env.example` to `.env`. Variables marked **Required** must be set before t
 
 ## API Endpoints
 
-All endpoints except `/api/health` and auth routes require `Authorization: Bearer <token>`.
+All endpoints except `/health` and auth routes require `Authorization: Bearer <token>`.
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/auth/apple` | Apple Sign-In — returns JWT |
 | `POST` | `/api/auth/verify` | Verify JWT token |
-| `GET` | `/api/health` | Health check |
+| `GET` | `/health` | Health check |
 | `POST` | `/api/screenshots/upload` | Upload a screenshot; returns OCR-extracted stats for review |
 | `POST` | `/api/screenshots/upload-multiple` | Upload up to 10 screenshots |
 | `POST` | `/api/screenshots/save` | Confirm reviewed stats; atomically saves game, players, and teams |

@@ -7,7 +7,6 @@ import { fromBuffer as fileTypeFromBuffer } from 'file-type';
 import supabaseService from '@/services/supabase';
 import { EnhancedOCRService } from '@/services/enhancedOCRService';
 import BoxScoreParser from '@/services/boxScoreParser';
-import imageProcessor from '@/services/imageProcessor';
 import { authenticateToken } from '@/middleware/auth';
 import { ApiResponse, Game, Player } from '@/types';
 import { classifyScreenshot } from '@/services/junkFilter';

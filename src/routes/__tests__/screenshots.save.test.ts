@@ -30,11 +30,6 @@ jest.mock('@/services/enhancedOCRService', () => ({
   })),
 }));
 
-jest.mock('@/services/imageProcessor', () => ({
-  __esModule: true,
-  default: { processImage: jest.fn() },
-}));
-
 jest.mock('@/services/junkFilter', () => ({
   classifyScreenshot: jest.fn().mockResolvedValue({
     isValidBoxScore: true,

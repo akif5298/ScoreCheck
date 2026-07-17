@@ -2,20 +2,20 @@
 FROM node:22
 
 # Native-module build deps (canvas needs cairo/pango; Prisma needs OpenSSL)
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
-    pkgconfig \
-    openssl \
-    openssl-dev \
-    cairo-dev \
-    pango-dev \
-    pixman-dev \
+    pkg-config \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libjpeg-dev \
+    libgif-dev \
+    librsvg2-dev \
+    libpixman-1-dev \
     libpng-dev \
-    jpeg-dev \
-    giflib-dev \
-    librsvg-dev
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

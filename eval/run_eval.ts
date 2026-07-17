@@ -41,6 +41,7 @@ interface Flags {
   format: Format;
   threshold: number;
   models: string[];
+  mismatches: boolean;
 }
 
 function parseFlags(argv: string[]): Flags {
@@ -70,7 +71,9 @@ function parseFlags(argv: string[]): Flags {
     models = ['minicpm-v:latest'];
   }
 
-  return { pipeline, format, threshold, models };
+  const mismatches = argv.includes('--mismatches');
+
+  return { pipeline, format, threshold, models, mismatches };
 }
 
 // -- Ground-truth types -------------------------------------------------------
@@ -278,7 +281,18 @@ function latStr(r: PipelineResult): string {
   return r.imagesRun > 0 ? (r.totalLatencyMs / r.imagesRun / 1000).toFixed(0) + 's' : '-';
 }
 
-function printTableResult(r: PipelineResult, threshold: number): void {
+function printMismatches(r: PipelineResult): void {
+  if (r.mismatches.length === 0) return;
+  console.log(`\nMismatches (${r.mismatches.length}):`);
+  for (const m of r.mismatches) {
+    console.log(
+      `  [${m.screenshotFile}] slot ${m.slot} (${m.expectedName}) ${m.field}: `
+      + `expected ${JSON.stringify(m.expected)}, got ${JSON.stringify(m.actual)}`,
+    );
+  }
+}
+
+function printTableResult(r: PipelineResult, threshold: number, showMismatches = false): void {
   console.log(`\n=== ${r.label} ===`);
   console.log(`Images run    : ${r.imagesRun}`);
   console.log(`Avg latency   : ${latStr(r)}`);
@@ -303,6 +317,7 @@ function printTableResult(r: PipelineResult, threshold: number): void {
   if (r.errors.length > 0) {
     console.log('\nErrors:'); r.errors.forEach(e => console.log(e));
   }
+  if (showMismatches) printMismatches(r);
 }
 
 function printJSONResult(r: PipelineResult): void {
@@ -450,7 +465,7 @@ async function main(): Promise<void> {
     if (flags.format === 'json') {
       for (const r of ollamaResults.values()) printJSONResult(r);
     } else if (ollamaResults.size === 1) {
-      printTableResult(ollamaResults.values().next().value!, flags.threshold);
+      printTableResult(ollamaResults.values().next().value!, flags.threshold, flags.mismatches);
     } else {
       printModelBenchTable([...ollamaResults.values()]);
     }

@@ -14,16 +14,17 @@ export const ALLOWED_PLAYER_NAMES = [
 export type AllowedPlayerName = typeof ALLOWED_PLAYER_NAMES[number];
 
 // ─── Ollama ───────────────────────────────────────────────────────────────────
-// OLLAMA_EXTRACTION_MODEL: fine-tuned Qwen2.5-VL-3B (QLoRA, 38 labeled games).
-// Extraction runs full-image single-pass for this model (see ollamaExtractor).
-// Holdout eval: 90.7% cell-level accuracy at ~28s/image, vs 79.8% at ~165s for
-// the qwen2.5vl:3b-fp16 base through the crop pipeline.
+// OLLAMA_EXTRACTION_MODEL: fine-tuned Qwen2.5-VL-3B (QLoRA, round 5 — trained
+// on team-half crops, 38 labeled games). Extraction runs team-split inference
+// for this model (see extractFineTunedTeamHalf in ollamaExtractor.ts).
+// Holdout eval: 84.6% official accuracy at ~22s/image (up from 77.9% for the
+// round-4b full-image model this replaces).
 // OLLAMA_JUNK_FILTER_MODEL: minicpm-v stays — the junk filter is a simple
 // yes/no classification the fine-tune wasn't trained for.
 // ─────────────────────────────────────────────────────────────────────────────
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
 export const OLLAMA_JUNK_FILTER_MODEL = 'minicpm-v:latest';
-export const OLLAMA_EXTRACTION_MODEL  = process.env.OLLAMA_EXTRACTION_MODEL ?? 'scorecheck-ocr:latest';
+export const OLLAMA_EXTRACTION_MODEL  = process.env.OLLAMA_EXTRACTION_MODEL ?? 'scorecheck-ocr-r5:latest';
 export const JUNK_FILTER_TIMEOUT_MS = 15_000;
 export const EXTRACTION_TIMEOUT_MS = 60_000;
 

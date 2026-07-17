@@ -1,9 +1,12 @@
 ﻿/**
  * Ollama extraction pipeline.
  *
- * Primary path: 2 parallel team-half crops → parse 5 players each.
- * Per-row retry: if either team returns < 5 players, re-extract each row individually.
- * Fallback: full-image extraction (last resort).
+ * Fine-tuned models (scorecheck-ocr*): 2 parallel team-half crops (primary,
+ * 84.4% official / 89.7% cell-level on the frozen holdout vs. 77.9% for
+ * single-pass full-image on the same model — bigger glyphs, missing rows
+ * localize to one team) → per-row retry for any half returning < 5 →
+ * single-pass full-image as a last-resort fallback.
+ * Other models: team-half crop pipeline with per-row retry, full-image fallback.
  *
  * Eval: npm run eval -- --pipeline=ollama
  *       npm run eval:bench
@@ -520,23 +523,28 @@ async function extractRaw(
  * missing slot with an empty row. Prevents a skipped row from shifting every
  * later player up one position (e.g. the SG landing in the PG's slot, or a
  * team-B player being counted as team A). Only applies when every extracted
- * player carries a valid, unique slot — otherwise returns the list unchanged
- * (older models don't emit slots).
+ * player carries a valid, unique slot in [1, slotCount] — otherwise returns
+ * the list unchanged (older models don't emit slots).
+ *
+ * slotCount is 10 for a full-table call, 5 for a single team-half call
+ * (local slot numbering within that half).
  */
-export function alignBySlots(players: ExtractedPlayer[]): ExtractedPlayer[] {
-  if (players.length === 0 || players.length > 10) return players;
+export function alignBySlots(players: ExtractedPlayer[], slotCount = 10): ExtractedPlayer[] {
+  if (players.length === 0 || players.length > slotCount) return players;
   const bySlot = new Map<number, ExtractedPlayer>();
   for (const p of players) {
-    if (p.slot === undefined || bySlot.has(p.slot)) return players;
+    if (p.slot === undefined || p.slot < 1 || p.slot > slotCount || bySlot.has(p.slot)) return players;
     bySlot.set(p.slot, p);
   }
-  if (bySlot.size === 10) return Array.from({ length: 10 }, (_, i) => bySlot.get(i + 1) as ExtractedPlayer);
+  if (bySlot.size === slotCount) {
+    return Array.from({ length: slotCount }, (_, i) => bySlot.get(i + 1) as ExtractedPlayer);
+  }
   const emptyRow = (slot: number): ExtractedPlayer => ({
     slot, name: '', grade: '',
     points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0, turnovers: 0, fouls: 0,
     fgMade: 0, fgAttempted: 0, threeMade: 0, threeAttempted: 0, ftMade: 0, ftAttempted: 0,
   });
-  return Array.from({ length: 10 }, (_, i) => bySlot.get(i + 1) ?? emptyRow(i + 1));
+  return Array.from({ length: slotCount }, (_, i) => bySlot.get(i + 1) ?? emptyRow(i + 1));
 }
 
 // Fine-tuned models are trained on FULL screenshots at 1280px longest edge
@@ -598,15 +606,195 @@ Return ONLY valid JSON — no markdown, no explanation, no code fences:
   ]
 }`;
 
+// Team-half variant of FINE_TUNED_PROMPT: same schema, but exactly 5 players
+// and slot is local to the half (1-5) rather than global (1-10). MUST stay
+// byte-identical to the team-half prompt in scripts/export_dataset_teams.py.
+const FINE_TUNED_TEAM_PROMPT = `You are analyzing a cropped section of an NBA 2K basketball game box score, showing one team's 5 players.
+
+Extract ALL player statistics from the visible rows. There are exactly 5 players, listed top to bottom. Number each row by its visual position from the top: 1-5. If a row is unreadable, skip it and keep the remaining rows' slot numbers unchanged — never renumber.
+
+The columns are:
+- Player name (the gamertag/username)
+- PTS (points)
+- REB (rebounds)
+- AST (assists)
+- STL (steals)
+- BLK (blocks)
+- TO (turnovers)
+- PF (personal fouls)
+- FGM/FGA (field goals made / attempted)
+- 3PM/3PA (three-pointers made / attempted)
+- FTM/FTA (free throws made / attempted)
+
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
+{
+  "players": [
+    {
+      "slot": 1,
+      "name": "PLAYER_NAME",
+      "points": 0,
+      "rebounds": 0,
+      "assists": 0,
+      "steals": 0,
+      "blocks": 0,
+      "turnovers": 0,
+      "fouls": 0,
+      "fgMade": 0,
+      "fgAttempted": 0,
+      "threeMade": 0,
+      "threeAttempted": 0,
+      "ftMade": 0,
+      "ftAttempted": 0
+    }
+  ]
+}`;
+
+async function extractFineTunedTeamHalf(
+  imageBuffer: Buffer,
+  teamCrop: Rect,
+  model: string,
+): Promise<ExtractedPlayer[]> {
+  // No header compositing: both TEAM_A_CROP and TEAM_B_CROP naturally include
+  // their own header row (column headers for A, "Home Team ..." section title
+  // for B) at the region's top edge — matching scripts/team_split_probe.mjs,
+  // which measured 84.4% official / 89.7% cell-level with exactly this crop,
+  // no compositing. PNG (lossless): matches training preprocessing exactly.
+  const teamBuf  = await cropRegion(imageBuffer, teamCrop);
+  const inputBuf = await sharp(teamBuf)
+    .resize(FINE_TUNED_IMG_EDGE, FINE_TUNED_IMG_EDGE, { fit: 'inside', withoutEnlargement: true })
+    .png()
+    .toBuffer();
+
+  const raw = await ollamaChat(inputBuf.toString('base64'), FINE_TUNED_TEAM_PROMPT, model, {
+    timeoutMs:  TIMEOUT_MS,
+    numPredict: 1024,
+    numCtx:     FINE_TUNED_NUM_CTX,
+  });
+  const parsed = extractJSON(raw);
+  let playersRaw: unknown[];
+  if (Array.isArray(parsed)) {
+    playersRaw = parsed;
+  } else if (parsed && typeof parsed === 'object' && Array.isArray((parsed as Record<string, unknown>)['players'])) {
+    playersRaw = (parsed as Record<string, unknown>)['players'] as unknown[];
+  } else {
+    throw new OllamaExtractionError('Model JSON missing "players" array', raw);
+  }
+  // Not aligned here — the caller aligns after seeing the raw count, so a
+  // padded-blank row (from a skipped slot) can still be distinguished from
+  // a genuinely complete half and targeted for per-row retry.
+  return playersRaw.map(parsePlayer);
+}
+
+// Fine-tuned variant of SINGLE_PLAYER_PROMPT: matches FINE_TUNED_TEAM_PROMPT's
+// schema (no grade field, TO before PF) instead of the generic crop-pipeline
+// schema, since this now backs the fine-tuned model's own retry path.
+const FINE_TUNED_SINGLE_ROW_PROMPT = `This image shows ONE row from an NBA 2K basketball game box score table.
+Extract the player name and all stats from this single row.
+Columns left to right: name | PTS | REB | AST | STL | BLK | TO | PF | FGM/FGA | 3PM/3PA | FTM/FTA
+FGM/FGA, 3PM/3PA, FTM/FTA are shown as "made/attempted" (e.g. 8/15 → fgMade=8, fgAttempted=15).
+IMPORTANT — gamertag format rules: 3–16 chars, first char is a letter, only letters/digits/hyphens/underscores allowed, no spaces, no special chars, no non-Latin scripts.
+Return ONLY valid JSON, no markdown:
+{"players": [{"name": "PLAYER_NAME", "points": 0, "rebounds": 0, "assists": 0, "steals": 0, "blocks": 0, "turnovers": 0, "fouls": 0, "fgMade": 0, "fgAttempted": 0, "threeMade": 0, "threeAttempted": 0, "ftMade": 0, "ftAttempted": 0}]}`;
+
+/**
+ * After alignBySlots(raw, 5) has padded a team half to 5 slots, re-extract
+ * ONLY the blank (padded) rows — one targeted row crop per gap — instead of
+ * redoing all 5. Cheaper than extractTeamPerRow's blanket retry, and (unlike
+ * the blanket retry) actually reachable: alignBySlots pads a skipped row to
+ * a full 5-length array internally, so a naive `.length < 5` check on the
+ * team-half result never sees the gap.
+ */
+async function fillMissingSlots(
+  imageBuffer: Buffer,
+  players: ExtractedPlayer[],
+  rowCrops: Rect[],
+  model: string,
+): Promise<ExtractedPlayer[]> {
+  const missing = players.map((p, i) => (p.name === '' ? i : -1)).filter(i => i !== -1);
+  if (missing.length === 0) return players;
+  const result = [...players];
+  await Promise.all(missing.map(async i => {
+    const crop = rowCrops[i];
+    if (!crop) return;
+    try {
+      const buf = await cropRegion(imageBuffer, crop);
+      const raw = await ollamaChat(buf.toString('base64'), FINE_TUNED_SINGLE_ROW_PROMPT, model, {
+        timeoutMs:  TIMEOUT_MS,
+        numPredict: 256,
+      });
+      const parsed     = extractJSON(raw);
+      const playersRaw = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray((parsed as Record<string, unknown>)['players'])
+          ? (parsed as Record<string, unknown>)['players'] as unknown[]
+          : [parsed];
+      const first = playersRaw[0];
+      if (first) result[i] = { ...parsePlayer(first), slot: i + 1 };
+    } catch {
+      // keep the blank placeholder — this row stays a known gap, not a guess
+    }
+  }));
+  return result;
+}
+
 export async function extractBoxScore(
   imageBuffer: Buffer,
   model = DEFAULT_MODEL,
 ): Promise<OllamaExtractionResult> {
   const start = Date.now();
 
-  // Full-image first for the fine-tuned model; fall through to the crop
-  // pipeline only when a row goes missing (rare, ~1/10 images).
+  // Team-split first for the fine-tuned model: 2 parallel calls, each half
+  // at the model's training resolution — bigger glyphs, and a missing row
+  // only affects its own team's positions. Measured 84.4% official / 89.7%
+  // cell-level vs. 77.9% for single-pass full-image on the same model
+  // (frozen 10-image holdout). Falls through to full-image only if
+  // team-split comes back short on both halves after per-row retry.
   if (model.startsWith(FINE_TUNED_MODEL_PREFIX)) {
+    try {
+      const [teamARaw, teamBRaw] = await Promise.all([
+        extractFineTunedTeamHalf(imageBuffer, TEAM_A_CROP, model).catch(() => [] as ExtractedPlayer[]),
+        extractFineTunedTeamHalf(imageBuffer, TEAM_B_CROP, model).catch(() => [] as ExtractedPlayer[]),
+      ]);
+      let teamAPlayers = alignBySlots(teamARaw, 5);
+      let teamBPlayers = alignBySlots(teamBRaw, 5);
+
+      // Aligned to 5 with slot-tagged gaps: retry only the missing row(s).
+      // Not alignable (raw < 5 with no usable slots): fall back to a full
+      // per-row retry of that half, as before.
+      if (teamAPlayers.length === 5 && teamAPlayers.some(p => p.name === '')) {
+        console.warn('[Ollama] Team A has a skipped row — retrying just that row');
+        teamAPlayers = await fillMissingSlots(imageBuffer, teamAPlayers, TEAM_A_ROW_CROPS, model);
+      } else if (teamAPlayers.length < 5) {
+        console.warn(`[Ollama] Team A returned ${teamAPlayers.length}/5 — retrying per-row`);
+        const rowResult = await extractTeamPerRow(imageBuffer, TEAM_A_ROW_CROPS, model);
+        if (rowResult.length > teamAPlayers.length) teamAPlayers = rowResult;
+      }
+      if (teamBPlayers.length === 5 && teamBPlayers.some(p => p.name === '')) {
+        console.warn('[Ollama] Team B has a skipped row — retrying just that row');
+        teamBPlayers = await fillMissingSlots(imageBuffer, teamBPlayers, TEAM_B_ROW_CROPS, model);
+      } else if (teamBPlayers.length < 5) {
+        console.warn(`[Ollama] Team B returned ${teamBPlayers.length}/5 — retrying per-row`);
+        const rowResult = await extractTeamPerRow(imageBuffer, TEAM_B_ROW_CROPS, model);
+        if (rowResult.length > teamBPlayers.length) teamBPlayers = rowResult;
+      }
+
+      const players = [...teamAPlayers, ...teamBPlayers];
+      if (players.length >= 8) {
+        if (players.length < 10) {
+          console.warn(`[Ollama] Team-split returned ${players.length}/10 — accepting partial result`);
+        }
+        return {
+          players,
+          rawModelOutput: JSON.stringify({ players }),
+          latencyMs: Date.now() - start,
+          model,
+        };
+      }
+      console.warn(`[Ollama] Team-split returned ${players.length}/10 — falling back to full-image`);
+    } catch (err) {
+      console.warn('[Ollama] Team-split extraction failed — falling back to full-image', err instanceof Error ? err.message : String(err));
+    }
+
     try {
       const fineTunedInput = FINE_TUNED_TABLE_CROP
         ? await cropRegion(imageBuffer, TABLE_CROP)
@@ -616,22 +804,15 @@ export async function extractBoxScore(
         numCtx:            FINE_TUNED_NUM_CTX,
         prompt:            FINE_TUNED_PROMPT,
       });
-      // Accept 8-9 players (review UI handles a missing row). A temp-0 retry
-      // is deterministic, and the crop pipeline is out-of-distribution for a
-      // table-crop-trained model — falling back to it costs minutes and tends
-      // to produce worse rows than simply accepting the near-complete result.
-      // Slot-trained models let us pad the SPECIFIC missing row so later
-      // players keep their correct positions and team assignment.
-      if (result.players.length >= 8) {
-        if (result.players.length < 10) {
-          console.warn(`[Ollama] Full-image returned ${result.players.length}/10 — accepting partial result`);
-        }
-        return { ...result, players: alignBySlots(result.players) };
+      if (result.players.length < 10) {
+        console.warn(`[Ollama] Full-image fallback returned ${result.players.length}/10 — accepting partial result`);
       }
-      console.warn(`[Ollama] Full-image returned ${result.players.length}/10 — falling back to crop pipeline`);
+      return { ...result, players: alignBySlots(result.players) };
     } catch (err) {
-      console.warn('[Ollama] Full-image extraction failed — falling back to crop pipeline', err instanceof Error ? err.message : String(err));
+      console.warn('[Ollama] Full-image fallback failed', err instanceof Error ? err.message : String(err));
     }
+
+    return extractRaw(imageBuffer, model, start);
   }
 
   try {

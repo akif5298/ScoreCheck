@@ -1,6 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useState, type FormEvent } from "react";
+import { toast } from "sonner";
 import { AppShell, Card, Badge } from "@/components/app-shell";
+import { useAuth } from "@/contexts/auth-context";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -8,7 +11,7 @@ export const Route = createFileRoute("/settings")({
       { title: "Settings — ScoreCheck" },
       {
         name: "description",
-        content: "Account, OCR pipeline, and notification preferences for ScoreCheck.",
+        content: "Account and security preferences for ScoreCheck.",
       },
     ],
   }),
@@ -16,108 +19,161 @@ export const Route = createFileRoute("/settings")({
 });
 
 function SettingsPage() {
-  const [autoVerify, setAutoVerify] = useState(true);
-  const [notifyReview, setNotifyReview] = useState(true);
-  const [notifySaved, setNotifySaved] = useState(false);
-  const [pipeline, setPipeline] = useState<"gcv" | "qwen">("gcv");
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleSignOut = () => {
+    logout();
+    void navigate({ to: "/login" });
+  };
+
+  if (!user) return null; // AppShell redirects to /login
+
+  const initials =
+    (user.name ?? user.email)
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0]?.toUpperCase())
+      .join("") || "?";
+
+  const memberSince = new Date(user.createdAt).toLocaleDateString(undefined, {
+    month: "short",
+    year: "numeric",
+  });
 
   return (
     <AppShell
       eyebrow="Preferences"
       title="Settings"
-      description="Tune the OCR pipeline, manage your account, and decide what lands in your inbox."
-      actions={
-        <button className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90">
-          Save changes
-        </button>
-      }
+      description="Manage your account and security."
     >
       <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
-        <Card title="Account" hint="Apple Sign-In session">
+        <Card title="Account" hint="Your ScoreCheck identity">
           <div className="flex items-center gap-4 border-b border-border pb-5">
             <div className="grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground font-display text-lg font-semibold">
-              MJ
+              {initials}
             </div>
             <div className="flex-1">
-              <div className="font-display text-base font-semibold">Marcus Johnson</div>
-              <div className="text-xs text-muted-foreground">marcus@scorecheck.app</div>
+              <div className="font-display text-base font-semibold">{user.name ?? "—"}</div>
+              <div className="text-xs text-muted-foreground">{user.email}</div>
               <div className="mt-1.5">
-                <Badge tone="primary">Admin</Badge>
+                <Badge tone={user.role === "ADMIN" ? "primary" : "default"}>
+                  {user.role === "ADMIN" ? "Admin" : "Member"}
+                </Badge>
               </div>
             </div>
           </div>
           <dl className="mt-5 space-y-3 text-sm">
-            <Row label="Handle" value="@marcus" />
-            <Row label="Member since" value="Jan 2026" />
-            <Row label="Last sign-in" value="2 hours ago" />
-            <Row label="Connected" value="Apple ID" />
+            <Row label="Member since" value={memberSince} />
+            <Row label="Sign-in" value="Email + password" />
           </dl>
-          <button className="mt-6 inline-flex h-9 items-center rounded-md border border-border bg-surface px-4 text-sm font-medium hover:bg-secondary">
+          <button
+            onClick={handleSignOut}
+            className="mt-6 inline-flex h-9 items-center rounded-md border border-border bg-surface px-4 text-sm font-medium hover:bg-secondary"
+          >
             Sign out
           </button>
         </Card>
 
-        <div className="space-y-6">
-          <Card title="OCR pipeline" hint="Choose extraction engine for new uploads">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <PipelineCard
-                active={pipeline === "gcv"}
-                onClick={() => setPipeline("gcv")}
-                title="Google Cloud Vision"
-                meta="4-pass · 120 regions"
-                stat="99.1% accuracy"
-                cost="$0.006 / image"
-              />
-              <PipelineCard
-                active={pipeline === "qwen"}
-                onClick={() => setPipeline("qwen")}
-                title="Qwen2.5-VL"
-                meta="Local · Ollama"
-                stat="96.8% accuracy"
-                cost="Free"
-              />
-            </div>
-            <Toggle
-              label="Auto-verify high-confidence runs"
-              hint="Skip the review screen when OCR confidence ≥ 99%"
-              value={autoVerify}
-              onChange={setAutoVerify}
-            />
-          </Card>
-
-          <Card title="Notifications" hint="When ScoreCheck pings you">
-            <div className="divide-y divide-border">
-              <Toggle
-                label="Review queue alerts"
-                hint="Email me when a teammate uploads a low-confidence game"
-                value={notifyReview}
-                onChange={setNotifyReview}
-              />
-              <Toggle
-                label="Saved-game digest"
-                hint="Weekly summary of every game added to the league"
-                value={notifySaved}
-                onChange={setNotifySaved}
-              />
-            </div>
-          </Card>
-
-          <Card title="Danger zone" hint="Permanent actions, please be sure">
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-destructive/30 bg-destructive/5 p-4">
-              <div>
-                <div className="font-display text-sm font-semibold">Delete league data</div>
-                <div className="text-xs text-muted-foreground">
-                  Removes every uploaded game and screenshot. Cannot be undone.
-                </div>
-              </div>
-              <button className="inline-flex h-9 items-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90">
-                Delete
-              </button>
-            </div>
-          </Card>
-        </div>
+        <ChangePasswordCard />
       </div>
     </AppShell>
+  );
+}
+
+function ChangePasswordCard() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const inputClass =
+    "w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary";
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      toast.error("New password must be at least 8 characters");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error("New passwords don't match");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.post("/api/auth/change-password", { currentPassword, newPassword });
+      toast.success("Password updated");
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to update password");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Card title="Change password" hint="Pick something you don't use elsewhere">
+      <form onSubmit={(e) => void handleSubmit(e)} className="flex max-w-md flex-col gap-4">
+        <div>
+          <label htmlFor="currentPassword" className="stamp mb-1.5 block">
+            Current password
+          </label>
+          <input
+            id="currentPassword"
+            type="password"
+            required
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label htmlFor="newPassword" className="stamp mb-1.5 block">
+            New password
+          </label>
+          <input
+            id="newPassword"
+            type="password"
+            required
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="At least 8 characters"
+            autoComplete="new-password"
+            minLength={8}
+            maxLength={72}
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label htmlFor="confirmPassword" className="stamp mb-1.5 block">
+            Confirm new password
+          </label>
+          <input
+            id="confirmPassword"
+            type="password"
+            required
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {submitting ? "Updating…" : "Update password"}
+          </button>
+        </div>
+      </form>
+    </Card>
   );
 }
 
@@ -127,74 +183,5 @@ function Row({ label, value }: { label: string; value: string }) {
       <dt className="stamp">{label}</dt>
       <dd className="font-mono tabular-nums">{value}</dd>
     </div>
-  );
-}
-
-function Toggle({
-  label,
-  hint,
-  value,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-4 py-4 first:pt-5">
-      <div className="flex-1">
-        <div className="text-sm font-medium">{label}</div>
-        <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>
-      </div>
-      <button
-        onClick={() => onChange(!value)}
-        className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors ${
-          value ? "border-primary bg-primary" : "border-border bg-secondary"
-        }`}
-        aria-pressed={value}
-      >
-        <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-background transition-transform ${
-            value ? "translate-x-[22px]" : "translate-x-0.5"
-          }`}
-        />
-      </button>
-    </div>
-  );
-}
-
-function PipelineCard({
-  active,
-  onClick,
-  title,
-  meta,
-  stat,
-  cost,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  meta: string;
-  stat: string;
-  cost: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-md border p-4 text-left transition-colors ${
-        active
-          ? "border-foreground bg-secondary/60"
-          : "border-border bg-background hover:bg-secondary/40"
-      }`}
-    >
-      <div className="flex items-center justify-between">
-        <span className="font-display text-sm font-semibold">{title}</span>
-        {active && <Badge tone="primary">Active</Badge>}
-      </div>
-      <div className="stamp mt-1">{meta}</div>
-      <div className="mt-3 font-mono text-sm tabular-nums">{stat}</div>
-      <div className="text-xs text-muted-foreground">{cost}</div>
-    </button>
   );
 }

@@ -58,35 +58,37 @@ export function AppShell({
         <nav className="flex-1 overflow-y-auto p-3">
           <div className="stamp px-3 pb-2 pt-3">Workspace</div>
           <ul className="space-y-0.5">
-            {nav.map((n) => {
-              const active =
-                n.to === "/"
-                  ? pathname === "/"
-                  : pathname === n.to || pathname.startsWith(`${n.to}/`);
-              return (
-                <li key={n.to}>
-                  <Link
-                    to={n.to}
-                    className={`group flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${
-                      active
-                        ? "bg-primary text-primary-foreground"
-                        : "text-foreground/70 hover:bg-secondary hover:text-foreground"
-                    }`}
-                  >
-                    <span className="flex items-center gap-3">
-                      <span
-                        className={`font-mono text-[10px] tracking-widest ${
-                          active ? "text-primary-foreground/60" : "text-muted-foreground"
-                        }`}
-                      >
-                        {n.code}
+            {nav
+              .filter((n) => n.to !== "/admin" || user?.role === "ADMIN")
+              .map((n) => {
+                const active =
+                  n.to === "/"
+                    ? pathname === "/"
+                    : pathname === n.to || pathname.startsWith(`${n.to}/`);
+                return (
+                  <li key={n.to}>
+                    <Link
+                      to={n.to}
+                      className={`group flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${
+                        active
+                          ? "bg-primary text-primary-foreground"
+                          : "text-foreground/70 hover:bg-secondary hover:text-foreground"
+                      }`}
+                    >
+                      <span className="flex items-center gap-3">
+                        <span
+                          className={`font-mono text-[10px] tracking-widest ${
+                            active ? "text-primary-foreground/60" : "text-muted-foreground"
+                          }`}
+                        >
+                          {n.code}
+                        </span>
+                        <span className="font-medium">{n.label}</span>
                       </span>
-                      <span className="font-medium">{n.label}</span>
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
+                    </Link>
+                  </li>
+                );
+              })}
           </ul>
 
           <div className="stamp px-3 pb-2 pt-6">Pipeline</div>

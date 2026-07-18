@@ -23,14 +23,24 @@ export const pgClient = new Client({ connectionString: process.env.DATABASE_URL 
 // Initialize connection
 pgClient.connect().catch(err => logger.error({ err }, 'PostgreSQL connection failed'));
 
+const SCREENSHOT_BUCKET = 'screenshots';
+// Signed-URL lifetime when serving a screenshot for viewing. Minted fresh on
+// every read, so short is fine — this is not what's persisted in the DB.
+const SIGNED_URL_TTL_SECONDS = 3600;
+
 export class SupabaseService {
   // File Storage Methods
-  async uploadImage(file: Buffer, fileName: string, bucket: string = 'screenshots'): Promise<string> {
+  //
+  // Screenshots live in Supabase Storage. We persist the object PATH (e.g.
+  // "<userId>-1-boxscore.jpg") in games.screenshotUrl — never a signed URL,
+  // which would expire — and mint a fresh signed URL at read time via
+  // getSignedUrl().
+  async uploadImage(file: Buffer, fileName: string, bucket: string = SCREENSHOT_BUCKET): Promise<string> {
     try {
       // Detect MIME type from file extension
       const fileExtension = fileName.split('.').pop()?.toLowerCase();
       let contentType = 'image/jpeg'; // default
-      
+
       if (fileExtension === 'png') {
         contentType = 'image/png';
       } else if (fileExtension === 'gif') {
@@ -38,13 +48,13 @@ export class SupabaseService {
       } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
         contentType = 'image/jpeg';
       }
-      
-      // Try Supabase storage with service role (bypasses RLS)
-      const { data, error } = await supabaseServiceRole.storage
+
+      // Service-role client bypasses RLS
+      const { error } = await supabaseServiceRole.storage
         .from(bucket)
         .upload(fileName, file, {
           contentType,
-          upsert: true
+          upsert: true,
         });
 
       if (error) {
@@ -52,25 +62,40 @@ export class SupabaseService {
         throw error;
       }
 
-      // For private buckets, we need to generate a signed URL
-      // This creates a temporary URL that expires after 1 hour
-      const { data: signedUrlData, error: signedUrlError } = await supabaseServiceRole.storage
-        .from(bucket)
-        .createSignedUrl(fileName, 3600); // 1 hour expiry
-
-      if (signedUrlError) {
-        logger.error({ err: signedUrlError }, 'Failed to generate signed URL');
-        // Fallback: try to construct the URL manually
-        const projectRef = process.env.SUPABASE_URL?.split('//')[1]?.split('.')[0];
-        const fallbackUrl = `https://${projectRef}.supabase.co/storage/v1/object/sign/${bucket}/${fileName}`;
-        return fallbackUrl;
-      }
-
-      return signedUrlData.signedUrl;
+      // Return the object path; the caller persists this, not a signed URL.
+      return fileName;
     } catch (error) {
       logger.error({ err: error }, 'Supabase storage upload failed');
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to upload image to Supabase: ${errorMessage}`);
+    }
+  }
+
+  // Mints a short-lived signed URL for a stored object path. Returns null when
+  // the path is empty or Supabase can't sign it (e.g. object was deleted).
+  async getSignedUrl(
+    objectPath: string,
+    bucket: string = SCREENSHOT_BUCKET,
+    expiresIn: number = SIGNED_URL_TTL_SECONDS,
+  ): Promise<string | null> {
+    if (!objectPath) return null;
+    // Legacy rows may still hold a full URL or a base64 data URI; pass those
+    // through unchanged rather than trying to sign them.
+    if (objectPath.startsWith('http') || objectPath.startsWith('data:')) {
+      return objectPath;
+    }
+    try {
+      const { data, error } = await supabaseServiceRole.storage
+        .from(bucket)
+        .createSignedUrl(objectPath, expiresIn);
+      if (error || !data) {
+        logger.error({ err: error, objectPath }, 'Failed to generate signed URL');
+        return null;
+      }
+      return data.signedUrl;
+    } catch (error) {
+      logger.error({ err: error, objectPath }, 'Failed to generate signed URL');
+      return null;
     }
   }
 

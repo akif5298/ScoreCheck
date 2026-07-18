@@ -3,7 +3,7 @@ import supabaseService, { pgClient } from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
 import { ApiResponse, AnalyticsData, PlayerStats } from '@/types';
 import logger from '@/utils/logger';
-import { ALLOWED_PLAYER_NAMES } from '@/constants';
+import { getAllowedNamesForUser } from '@/services/mappingService';
 import { getLineupEfficiency } from '@/services/lineupEfficiency';
 
 const router = Router();
@@ -21,14 +21,13 @@ router.get('/players', authenticateToken, async (req: Request, res: Response) =>
 
     const games = await supabaseService.getGamesByUserId(req.user.userId);
     const allPlayers = games.flatMap(game => game.players || []);
-    
-    // Filter players to only include allowed names
-    const players = allPlayers.filter(player => 
-      player.name && ALLOWED_PLAYER_NAMES.includes(player.name)
-    );
+
+    // Filter players to the user's mapped display names
+    const allowedNames = await getAllowedNamesForUser(req.user.userId);
+    const players = allPlayers.filter(player => player.name && allowedNames.has(player.name));
 
     // Calculate aggregated statistics
-    const playerStats = await calculatePlayerStats(req.user.userId);
+    const playerStats = await calculatePlayerStats(req.user.userId, allowedNames);
 
     const response: ApiResponse<{ players: any[]; stats: PlayerStats[] }> = {
       success: true,
@@ -123,8 +122,9 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     const uniqueTeamNames = new Set(allTeams.map(t => t.name));
     const totalTeams = uniqueTeamNames.size;
 
-    // Get player statistics
-    const playerStats = await calculatePlayerStats(req.user.userId);
+    // Get player statistics (scoped to the user's mapped display names)
+    const allowedNames = await getAllowedNamesForUser(req.user.userId);
+    const playerStats = await calculatePlayerStats(req.user.userId, allowedNames);
 
     // Get team statistics
     const teamStats = await calculateTeamStats(req.user.userId);
@@ -143,10 +143,10 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     }
 
     // Get top performers
-    const topPerformers = await getTopPerformers(req.user.userId);
+    const topPerformers = await getTopPerformers(req.user.userId, allowedNames);
 
     // Get game highs
-    const gameHighs = await getGameHighs(req.user.userId);
+    const gameHighs = await getGameHighs(req.user.userId, allowedNames);
 
     const analyticsData: AnalyticsData = {
       totalGames,
@@ -199,7 +199,10 @@ router.get('/lineups', authenticateToken, async (req: Request, res: Response) =>
 });
 
 // Helper function to calculate player statistics
-async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
+async function calculatePlayerStats(
+  userId: string,
+  allowedNames: Set<string>,
+): Promise<PlayerStats[]> {
   try {
     // Use optimized player_stats table instead of calculating on-the-fly
     const playerStats = await supabaseService.getPlayerStats(userId);
@@ -245,8 +248,8 @@ async function calculatePlayerStats(userId: string): Promise<PlayerStats[]> {
         continue;
       }
 
-      // Only include players with allowed names
-      if (!(ALLOWED_PLAYER_NAMES as readonly string[]).includes(player.name)) {
+      // Only include the user's mapped display names
+      if (!allowedNames.has(player.name)) {
         continue;
       }
       
@@ -494,8 +497,11 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
 }
 
 // Helper function to get top performers
-async function getTopPerformers(userId: string): Promise<{ points: PlayerStats[]; rebounds: PlayerStats[]; assists: PlayerStats[] }> {
-  const playerStats = await calculatePlayerStats(userId);
+async function getTopPerformers(
+  userId: string,
+  allowedNames: Set<string>,
+): Promise<{ points: PlayerStats[]; rebounds: PlayerStats[]; assists: PlayerStats[] }> {
+  const playerStats = await calculatePlayerStats(userId, allowedNames);
 
   return {
     points: playerStats
@@ -511,7 +517,10 @@ async function getTopPerformers(userId: string): Promise<{ points: PlayerStats[]
 }
 
 // Helper function to get game highs for various statistics
-async function getGameHighs(userId: string): Promise<{
+async function getGameHighs(
+  userId: string,
+  allowedNames: Set<string>,
+): Promise<{
   points: any[];
   rebounds: any[];
   assists: any[];
@@ -522,10 +531,8 @@ async function getGameHighs(userId: string): Promise<{
   const games = await supabaseService.getGamesByUserId(userId);
   const allPlayers = games.flatMap(game => game.players || []);
   
-  // Filter to only include allowed names
-  const filteredPlayers = allPlayers.filter(player => 
-    player.name && ALLOWED_PLAYER_NAMES.includes(player.name)
-  );
+  // Filter to the user's mapped display names
+  const filteredPlayers = allPlayers.filter(player => player.name && allowedNames.has(player.name));
 
   // Get game highs for each category
   const gameHighs = {

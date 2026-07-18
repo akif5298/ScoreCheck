@@ -13,9 +13,12 @@ import { classifyScreenshot } from '@/services/junkFilter';
 import { computePerceptualHash, hammingDistance } from '@/utils/imageHash';
 import { ValidationError } from '@/errors';
 import logger from '@/utils/logger';
-import { getMappingsForUser } from '@/services/mappingService';
 import {
-  ALLOWED_PLAYER_NAMES,
+  getMappingsForUser,
+  getAllowedNamesForUser,
+  getAllowedNamesArray,
+} from '@/services/mappingService';
+import {
   ALLOWED_IMAGE_MIME_TYPES,
   MAX_FILE_SIZE_BYTES,
   UPLOAD_RATE_LIMIT_WINDOW_MS,
@@ -571,11 +574,13 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       awayTeamInput,
     );
 
-    // Helper: accumulate player_totals for tracked players (does not write to player_stats directly)
+    // Helper: accumulate player_totals for tracked players (does not write to player_stats directly).
+    // Tracked players = the user's mapped display names.
     async function updatePlayerStats(gameId: string, players: IncomingPlayerData[], userId: string): Promise<void> {
       try {
+        const allowedNames = await getAllowedNamesForUser(userId);
         for (const playerData of players) {
-          if (!(ALLOWED_PLAYER_NAMES as readonly (string | undefined)[]).includes(playerData.name)) {
+          if (!playerData.name || !allowedNames.has(playerData.name)) {
             continue;
           }
           await updatePlayerTotals(playerData, userId);
@@ -681,7 +686,10 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     await updatePlayerStats(game.id, playersData, req.user.userId);
 
     // Update player_stats table with averages from player_totals
-    await supabaseService.updatePlayerStatsFromTotals(req.user.userId);
+    await supabaseService.updatePlayerStatsFromTotals(
+      req.user.userId,
+      await getAllowedNamesArray(req.user.userId),
+    );
 
     const response: ApiResponse<{ game: Game; players: Player[] }> = {
       success: true,
@@ -804,8 +812,12 @@ router.post('/generate-team-names', authenticateToken, async (req: Request, res:
       return res.status(400).json(response);
     }
 
-    // Generate custom team names using the new static method
-    const { teamAName, teamBName } = EnhancedOCRService.generateCustomTeamNamesAfterAssignment(players);
+    // Generate custom team names from the user's mapped display names
+    const customNames = await getAllowedNamesArray(req.user.userId);
+    const { teamAName, teamBName } = EnhancedOCRService.generateCustomTeamNamesAfterAssignment(
+      players,
+      customNames,
+    );
 
     const response: ApiResponse<{ teamAName: string; teamBName: string }> = {
       success: true,
@@ -831,6 +843,14 @@ router.post('/games/:gameId/start-edit', authenticateToken, async (req: Request,
   try {
     const { gameId } = req.params;
 
+    if (!req.user) {
+      const response: ApiResponse = {
+        success: false,
+        error: 'User not authenticated',
+      };
+      return res.status(401).json(response);
+    }
+
     if (!gameId) {
       const response: ApiResponse = {
         success: false,
@@ -839,7 +859,8 @@ router.post('/games/:gameId/start-edit', authenticateToken, async (req: Request,
       return res.status(400).json(response);
     }
 
-    const result = await supabaseService.startGameEdit(gameId);
+    const allowedNames = await getAllowedNamesArray(req.user.userId);
+    const result = await supabaseService.startGameEdit(gameId, req.user.userId, allowedNames);
 
     if (result) {
       const response: ApiResponse = {
@@ -851,7 +872,7 @@ router.post('/games/:gameId/start-edit', authenticateToken, async (req: Request,
     } else {
       const response: ApiResponse = {
         success: false,
-        error: 'Failed to start game edit',
+        error: 'Game not found',
       };
       return res.status(404).json(response);
     }
@@ -887,7 +908,8 @@ router.put('/games/:gameId', authenticateToken, async (req: Request, res: Respon
       return res.status(400).json(response);
     }
 
-    const updatedGame = await supabaseService.updateGame(gameId!, {
+    const allowedNames = await getAllowedNamesArray(req.user.userId);
+    const updatedGame = await supabaseService.updateGame(gameId!, req.user.userId, allowedNames, {
       homeTeam,
       awayTeam,
       homeScore,
@@ -899,9 +921,9 @@ router.put('/games/:gameId', authenticateToken, async (req: Request, res: Respon
     if (!updatedGame) {
       const response: ApiResponse = {
         success: false,
-        error: 'Failed to update game',
+        error: 'Game not found',
       };
-      return res.status(500).json(response);
+      return res.status(404).json(response);
     }
 
     const response: ApiResponse<Game> = {

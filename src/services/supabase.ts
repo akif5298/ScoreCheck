@@ -440,26 +440,6 @@ export class SupabaseService {
     }
   }
 
-  async getDashboardStats() {
-    try {
-      const query = `
-        SELECT 
-          COUNT(DISTINCT g.id) as total_games,
-          COUNT(DISTINCT p.id) as total_players,
-          COUNT(DISTINCT t.id) as total_teams
-        FROM games g
-        LEFT JOIN players p ON g.id = p."gameId"
-        LEFT JOIN teams t ON g.id = t."gameId"
-      `;
-      
-      const result = await pgClient.query(query);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error getting dashboard stats');
-      return { total_games: 0, total_players: 0, total_teams: 0 };
-    }
-  }
-
   async getDistinctPlayerCount(userId: string): Promise<number> {
     try {
       // Count distinct players by their name column (normalized to handle case/whitespace differences)
@@ -631,7 +611,8 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStatsFromTotals(userId: string) {
+  async updatePlayerStatsFromTotals(userId: string, allowedNames: string[]) {
+    if (allowedNames.length === 0) return { rowCount: 0 };
     try {
       const query = `
         INSERT INTO public.player_stats (
@@ -728,9 +709,9 @@ export class SupabaseService {
           pt.total_ftm as "totalftmade",
           pt.total_fta as "totalftattempted"
         FROM public.player_totals pt
-        WHERE pt.player_name IN ('Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif')
+        WHERE pt.player_name = ANY($2)
         AND pt.userid = $1
-        ON CONFLICT ("playerName", "userId") 
+        ON CONFLICT ("playerName", "userId")
         DO UPDATE SET
           team = EXCLUDED.team,
           "gamesPlayed" = EXCLUDED."gamesPlayed",
@@ -759,8 +740,8 @@ export class SupabaseService {
           "totalftattempted" = EXCLUDED."totalftattempted",
           "updatedAt" = CURRENT_TIMESTAMP
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await pgClient.query(query, [userId, allowedNames]);
       return result;
     } catch (error) {
       logger.error({ err: error }, 'Error running bulk update of player_stats from player_totals');
@@ -768,36 +749,36 @@ export class SupabaseService {
     }
   }
 
-  async startGameEdit(gameId: string) {
+  async startGameEdit(gameId: string, userId: string, allowedNames: string[]) {
     try {
       // Start a transaction
       await pgClient.query('BEGIN');
 
-      // Get the current game data
+      // Get the current game data (owner-scoped)
       const currentGameQuery = `
         SELECT g.*, json_agg(p.*) as players
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId]);
+      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
       const currentGame = currentGameResult.rows[0];
-      
+
       if (!currentGame) {
         await pgClient.query('ROLLBACK');
         return null;
       }
 
-      // List of players we care about for totals
-      const trackedPlayers = ['Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif'];
-      
+      // Players tracked for totals: the user's mapped display names
+      const trackedPlayers = allowedNames;
+
       // Get current player totals for tracked players
       const currentTotalsQuery = `
-        SELECT * FROM player_totals 
+        SELECT * FROM player_totals
         WHERE player_name = ANY($1) AND userid = $2
       `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, currentGame.userId]);
+      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
       const currentTotals = currentTotalsResult.rows;
 
       // Create a map of current totals by player name
@@ -883,36 +864,36 @@ export class SupabaseService {
     }
   }
 
-  async updateGame(gameId: string, updateData: any) {
+  async updateGame(gameId: string, userId: string, allowedNames: string[], updateData: any) {
     try {
       // Start a transaction
       await pgClient.query('BEGIN');
 
-      // First, get the current game data to see what we're replacing
+      // First, get the current game data to see what we're replacing (owner-scoped)
       const currentGameQuery = `
         SELECT g.*, json_agg(p.*) as players
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId]);
+      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
       const currentGame = currentGameResult.rows[0];
-      
+
       if (!currentGame) {
         await pgClient.query('ROLLBACK');
         return null;
       }
 
-      // List of players we care about for totals
-      const trackedPlayers = ['Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif'];
-      
+      // Players tracked for totals: the user's mapped display names
+      const trackedPlayers = allowedNames;
+
       // Get current player totals for tracked players
       const currentTotalsQuery = `
-        SELECT * FROM player_totals 
+        SELECT * FROM player_totals
         WHERE player_name = ANY($1) AND userid = $2
       `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, currentGame.userId]);
+      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
       const currentTotals = currentTotalsResult.rows;
 
       // Create a map of current totals by player name
@@ -1209,140 +1190,15 @@ export class SupabaseService {
         await pgClient.query(insertAwayTeamQuery, awayTeamValues);
       }
 
-      // Run the SQL query to update player_stats/averages
-      const updatePlayerStatsQuery = `
-        INSERT INTO public.player_stats (
-          id,
-          "playerName",
-          team,
-          "gamesPlayed",
-          "avgPoints",
-          "avgRebounds",
-          "avgAssists",
-          "avgSteals",
-          "avgBlocks",
-          "avgTurnovers",
-          "avgFouls",
-          "avgFgPercentage",
-          "avgThreePercentage",
-          "avgFtPercentage",
-          "avgPlusMinus",
-          "totalPoints",
-          "totalRebounds",
-          "totalAssists",
-          "totalSteals",
-          "totalBlocks",
-          "totalTurnovers",
-          "totalFouls",
-          "createdAt",
-          "updatedAt",
-          "userId",
-          "totalfgmade",
-          "totalfgattempted",
-          "totalthreemade",
-          "totalthreeattempted",
-          "totalftmade",
-          "totalftattempted"
-        )
-        SELECT 
-          gen_random_uuid()::text as id,
-          pt.player_name as "playerName",
-          pt.team,
-          pt.total_games as "gamesPlayed",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_points::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgPoints",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_rebounds::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgRebounds",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_assists::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgAssists",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_steals::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgSteals",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_blocks::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgBlocks",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_turnovers::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgTurnovers",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_fouls::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgFouls",
-          pt.fg_percentage as "avgFgPercentage",
-          pt.three_percentage as "avgThreePercentage",
-          pt.ft_percentage as "avgFtPercentage",
-          0.00 as "avgPlusMinus",
-          pt.total_points as "totalPoints",
-          pt.total_rebounds as "totalRebounds",
-          pt.total_assists as "totalAssists",
-          pt.total_steals as "totalSteals",
-          pt.total_blocks as "totalBlocks",
-          pt.total_turnovers as "totalTurnovers",
-          pt.total_fouls as "totalFouls",
-          CURRENT_TIMESTAMP as "createdAt",
-          CURRENT_TIMESTAMP as "updatedAt",
-          pt.userid as "userId",
-          pt.total_fgm as "totalfgmade",
-          pt.total_fga as "totalfgattempted",
-          pt.total_3pm as "totalthreemade",
-          pt.total_3pa as "totalthreeattempted",
-          pt.total_ftm as "totalftmade",
-          pt.total_fta as "totalftattempted"
-        FROM public.player_totals pt
-        WHERE pt.player_name IN ('Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif')
-        ON CONFLICT ("playerName", "userId") 
-        DO UPDATE SET
-          team = EXCLUDED.team,
-          "gamesPlayed" = EXCLUDED."gamesPlayed",
-          "avgPoints" = EXCLUDED."avgPoints",
-          "avgRebounds" = EXCLUDED."avgRebounds",
-          "avgAssists" = EXCLUDED."avgAssists",
-          "avgSteals" = EXCLUDED."avgSteals",
-          "avgBlocks" = EXCLUDED."avgBlocks",
-          "avgTurnovers" = EXCLUDED."avgTurnovers",
-          "avgFouls" = EXCLUDED."avgFouls",
-          "avgFgPercentage" = EXCLUDED."avgFgPercentage",
-          "avgThreePercentage" = EXCLUDED."avgThreePercentage",
-          "avgFtPercentage" = EXCLUDED."avgFtPercentage",
-          "totalPoints" = EXCLUDED."totalPoints",
-          "totalRebounds" = EXCLUDED."totalRebounds",
-          "totalAssists" = EXCLUDED."totalAssists",
-          "totalSteals" = EXCLUDED."totalSteals",
-          "totalBlocks" = EXCLUDED."totalBlocks",
-          "totalTurnovers" = EXCLUDED."totalTurnovers",
-          "totalFouls" = EXCLUDED."totalFouls",
-          "totalfgmade" = EXCLUDED."totalfgmade",
-          "totalfgattempted" = EXCLUDED."totalfgattempted",
-          "totalthreemade" = EXCLUDED."totalthreemade",
-          "totalthreeattempted" = EXCLUDED."totalthreeattempted",
-          "totalftmade" = EXCLUDED."totalftmade",
-          "totalftattempted" = EXCLUDED."totalftattempted",
-          "updatedAt" = CURRENT_TIMESTAMP;
-      `;
-
-      await pgClient.query(updatePlayerStatsQuery);
+      // Rebuild player_stats from player_totals for this user's tracked names.
+      // Runs on the same client, so it participates in this transaction.
+      await this.updatePlayerStatsFromTotals(userId, allowedNames);
 
       // Commit the transaction
       await pgClient.query('COMMIT');
 
       // Return the updated game with players
-      const updatedGame = await this.getGameById(gameId);
+      const updatedGame = await this.getGameById(gameId, userId);
       return updatedGame;
     } catch (error) {
       // Rollback on error
@@ -1352,20 +1208,20 @@ export class SupabaseService {
     }
   }
 
-  async getGameById(gameId: string) {
+  async getGameById(gameId: string, userId: string) {
     try {
       const query = `
-        SELECT g.*, 
+        SELECT g.*,
                json_agg(DISTINCT p.*) as players,
                json_agg(DISTINCT t.*) as teams
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      
-      const result = await pgClient.query(query, [gameId]);
+
+      const result = await pgClient.query(query, [gameId, userId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');

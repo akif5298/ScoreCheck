@@ -3,16 +3,6 @@
  * Import from here — do not redeclare in individual files.
  */
 
-// ── Player allow-list ─────────────────────────────────────────────────────────
-// Reference only — not used as an extraction filter. See PlayerMapping table.
-// Used by analytics routes and updatePlayerStats to identify friend-group members
-// whose running totals are maintained in player_totals / player_stats.
-export const ALLOWED_PLAYER_NAMES = [
-  'Akif', 'Anis', 'Abdul', 'Ikroop', 'Nillan', 'Dylan', 'Ankit', 'TV', 'Kashif',
-] as const;
-
-export type AllowedPlayerName = typeof ALLOWED_PLAYER_NAMES[number];
-
 // ─── Ollama ───────────────────────────────────────────────────────────────────
 // OLLAMA_EXTRACTION_MODEL: fine-tuned Qwen2.5-VL-3B (QLoRA, round 5 — trained
 // on team-half crops, 38 labeled games). Extraction runs team-split inference

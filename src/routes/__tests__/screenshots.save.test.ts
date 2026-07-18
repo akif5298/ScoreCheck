@@ -23,6 +23,13 @@ jest.mock('@/services/supabase', () => ({
   },
 }));
 
+jest.mock('@/services/mappingService', () => ({
+  __esModule: true,
+  getMappingsForUser: jest.fn().mockResolvedValue(new Map()),
+  getAllowedNamesForUser: jest.fn().mockResolvedValue(new Set(['Akif'])),
+  getAllowedNamesArray: jest.fn().mockResolvedValue(['Akif']),
+}));
+
 jest.mock('@/services/enhancedOCRService', () => ({
   EnhancedOCRService: jest.fn().mockImplementation(() => ({
     extractStructuredDataFromImage: jest.fn(),
@@ -75,7 +82,7 @@ const mockPlayer = {
   points: 20,
 };
 
-/** A minimal valid player entry (no name in ALLOWED_PLAYER_NAMES to keep tests simple). */
+/** A minimal valid player entry (name not in the mocked allowed set to keep tests simple). */
 const validPlayer = {
   name: 'NoRecord Player',
   team: 'Team A',
@@ -225,7 +232,7 @@ describe('POST /save', () => {
 
   describe('updatePlayerStats error isolation', () => {
     it('returns 200 even when getPlayerTotalsByPlayerName throws for a tracked player', async () => {
-      // 'Akif' is in ALLOWED_PLAYER_NAMES, which triggers the updatePlayerTotals path.
+      // 'Akif' is in the mocked allowed-names set, which triggers the updatePlayerTotals path.
       // The inner catch in updatePlayerTotals must absorb this error.
       mocked.getPlayerTotalsByPlayerName.mockRejectedValue(new Error('Totals DB error'));
 

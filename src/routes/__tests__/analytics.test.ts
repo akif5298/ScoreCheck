@@ -12,6 +12,12 @@ jest.mock('@/services/lineupEfficiency', () => ({
   getLineupEfficiency: jest.fn(),
 }));
 
+jest.mock('@/services/mappingService', () => ({
+  __esModule: true,
+  getAllowedNamesForUser: jest.fn().mockResolvedValue(new Set(['Akif'])),
+  getAllowedNamesArray: jest.fn().mockResolvedValue(['Akif']),
+}));
+
 jest.mock('@/middleware/auth', () => ({
   authenticateToken: jest.fn((req: any, _res: any, next: any) => {
     req.user = { userId: 'user-1', email: 'user@example.com', role: 'USER' };

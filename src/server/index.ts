@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 
 import logger from '@/utils/logger';
 
@@ -23,14 +24,37 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Client SPA build (TanStack Start SPA mode → client/dist/client, with
+// _shell.html as the prerendered app shell).
+const clientBuildPath = path.join(__dirname, '../../client/dist/client');
+const clientShellPath = path.join(clientBuildPath, '_shell.html');
+const clientBuildExists = fs.existsSync(clientShellPath);
+
+// The shell contains inline scripts (TanStack Start's hydration bootstrap);
+// script-src 'self' alone blocks them and the app renders blank. Allow them
+// by hash so CSP stays strict without 'unsafe-inline'.
+const inlineScriptHashes: string[] = [];
+if (clientBuildExists) {
+  const shellHtml = fs.readFileSync(clientShellPath, 'utf8');
+  for (const [, body] of shellHtml.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/g)) {
+    if (body) {
+      // Browsers hash the parsed script text, where the HTML tokenizer has
+      // replaced NUL bytes with U+FFFD — mirror that or the hash won't match.
+      const parsedText = body.replace(/\u0000/g, '\uFFFD');
+      const hash = crypto.createHash('sha256').update(parsedText, 'utf8').digest('base64');
+      inlineScriptHashes.push(`'sha256-${hash}'`);
+    }
+  }
+}
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      scriptSrc: ["'self'", ...inlineScriptHashes],
+      imgSrc: ["'self'", 'data:', 'https:'],
     },
   },
 }));
@@ -44,10 +68,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// CORS configuration
+// CORS configuration. In production the client is served same-origin, so no
+// cross-origin access is needed unless CORS_ORIGIN is set (comma-separated).
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://yourdomain.com'] 
+  origin: process.env.NODE_ENV === 'production'
+    ? (process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()) ?? [])
     : ['http://localhost:3000', 'http://localhost:8080'],
   credentials: true,
 }));
@@ -86,11 +111,7 @@ app.use('/uploads', express.static(path.join(__dirname, '../../uploads'), {
   },
 }));
 
-// Serve the client SPA build (TanStack Start SPA mode → client/dist/client,
-// with _shell.html as the prerendered app shell).
-const clientBuildPath = path.join(__dirname, '../../client/dist/client');
-const clientShellPath = path.join(clientBuildPath, '_shell.html');
-const clientBuildExists = fs.existsSync(clientShellPath);
+// Serve the client SPA build
 if (clientBuildExists) {
   app.use(express.static(clientBuildPath));
 }

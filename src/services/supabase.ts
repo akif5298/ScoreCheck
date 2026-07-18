@@ -93,67 +93,31 @@ export class SupabaseService {
   }
 
   // Database Methods using direct PostgreSQL connection
-  async createUser(userData: any) {
-    try {
-      // First check if user with this email already exists
-      const existingUserQuery = 'SELECT * FROM users WHERE email = $1';
-      const existingUser = await pgClient.query(existingUserQuery, [userData.email]);
-      
-      if (existingUser.rows.length > 0) {
-        // User exists, update their appleId if needed and return them
-        const existingUserData = existingUser.rows[0];
-        if (!existingUserData.appleId && userData.appleId) {
-          const updateQuery = 'UPDATE users SET "appleId" = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *';
-          const updateResult = await pgClient.query(updateQuery, [userData.appleId, existingUserData.id]);
-          return updateResult.rows[0];
-        }
-        return existingUserData;
-      }
-      
-      // Create new user
-      const query = `
-        INSERT INTO users (id, email, "appleId", name, role, "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-        RETURNING *
-      `;
-      const values = [userData.appleId, userData.email, userData.appleId, userData.name, userData.role || 'USER'];
-      
-      const result = await pgClient.query(query, values);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error creating user');
-      throw error;
-    }
+  async createLocalUser(userData: { email: string; name: string | null; passwordHash: string }) {
+    const query = `
+      INSERT INTO users (id, email, name, role, "passwordHash", "createdAt", "updatedAt")
+      VALUES (gen_random_uuid()::text, LOWER($1), $2, 'USER', $3, NOW(), NOW())
+      RETURNING *
+    `;
+    const result = await pgClient.query(query, [userData.email, userData.name, userData.passwordHash]);
+    return result.rows[0];
   }
 
-  async findUserByAppleId(appleId: string) {
-    try {
-      const query = 'SELECT * FROM users WHERE "appleId" = $1';
-      const result = await pgClient.query(query, [appleId]);
-      return result.rows[0] || null;
-    } catch (error) {
-      logger.error({ err: error }, 'Error finding user by Apple ID');
-      return null;
-    }
+  async findUserByEmail(email: string) {
+    const result = await pgClient.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    return result.rows[0] || null;
   }
 
-  async updateUser(userId: string, updateData: any) {
-    try {
-      const fields = Object.keys(updateData).map((key, index) => `${key} = $${index + 2}`);
-      const values = Object.values(updateData);
-      const query = `
-        UPDATE users 
-        SET ${fields.join(', ')}, updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `;
-      
-      const result = await pgClient.query(query, [userId, ...values]);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error updating user');
-      throw error;
-    }
+  async findUserById(userId: string) {
+    const result = await pgClient.query('SELECT * FROM users WHERE id = $1', [userId]);
+    return result.rows[0] || null;
+  }
+
+  async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await pgClient.query(
+      'UPDATE users SET "passwordHash" = $2, "updatedAt" = NOW() WHERE id = $1',
+      [userId, passwordHash],
+    );
   }
 
   async getGameHashesByUserId(userId: string): Promise<string[]> {

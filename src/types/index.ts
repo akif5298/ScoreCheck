@@ -3,6 +3,7 @@ export interface User {
   email: string;
   appleId: string | null;
   name: string | null;
+  passwordHash: string | null;
   role: string;
   createdAt: Date;
   updatedAt: Date;
@@ -99,18 +100,6 @@ export interface PlayerStats {
   createdAt: Date;
   updatedAt: Date;
   userId: string;
-}
-
-export interface AppleAuthRequest {
-  identityToken: string;
-  authorizationCode: string;
-  user?: {
-    name?: {
-      firstName?: string;
-      lastName?: string;
-    };
-    email?: string;
-  };
 }
 
 export interface JwtPayload {

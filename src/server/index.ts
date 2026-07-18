@@ -40,7 +40,7 @@ if (clientBuildExists) {
     if (body) {
       // Browsers hash the parsed script text, where the HTML tokenizer has
       // replaced NUL bytes with U+FFFD — mirror that or the hash won't match.
-      const parsedText = body.replace(/\u0000/g, '\uFFFD');
+      const parsedText = body.split('\u0000').join('\uFFFD');
       const hash = crypto.createHash('sha256').update(parsedText, 'utf8').digest('base64');
       inlineScriptHashes.push(`'sha256-${hash}'`);
     }

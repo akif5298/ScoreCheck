@@ -1,24 +1,33 @@
+// Prisma schema — reconciled with the live Supabase database via `prisma db pull`
+// (2026-07-18). The live DB is the source of truth; migrations are baselined from
+// this schema (see prisma/migrations/0_init). Note: data routes use the raw pg
+// service layer (src/services/supabase.ts); Prisma is used by admin routes and
+// scripts, so field names here must stay in sync with the raw SQL.
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 model User {
-  id          String        @id @default(cuid())
-  email       String        @unique
-  appleId     String?       @unique
-  name        String?
-  role        String        @default("USER")
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  games       Game[]
-  playerStats PlayerStats[]
-  players     Player[]
-  teams       Team[]
+  id           String         @id @default(cuid())
+  email        String         @unique
+  appleId      String?        @unique
+  name         String?
+  passwordHash String?
+  role         String         @default("USER")
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  games        Game[]
+  playerStats  PlayerStats[]
+  playerTotals PlayerTotals[]
+  players      Player[]
+  teams        Team[]
 
   @@map("users")
 }
@@ -31,11 +40,11 @@ model Game {
   homeScore     Int
   awayScore     Int
   screenshotUrl String?
-  imageHash     String?
   processed     Boolean  @default(false)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   userId        String
+  imageHash     String?
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   players       Player[]
   teams         Team[]
@@ -44,106 +53,155 @@ model Game {
 }
 
 model Player {
-  id             String   @id @default(cuid())
-  name           String
-  team           String
-  teammateGrade  String?
-  gameIdFromFile String
-  playerId       String
-  position       String
-  points         Int      @default(0)
-  rebounds       Int      @default(0)
-  assists        Int      @default(0)
-  steals         Int      @default(0)
-  blocks         Int      @default(0)
-  turnovers      Int      @default(0)
-  fouls          Int      @default(0)
-  fgMade         Int      @default(0)
-  fgAttempted    Int      @default(0)
-  threeMade      Int      @default(0)
-  threeAttempted Int      @default(0)
-  ftMade         Int      @default(0)
-  ftAttempted    Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  gameId         String
-  userId         String
-  game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  name             String
+  team             String
+  teammateGrade    String?
+  gameIdFromFile   String
+  playerId         String
+  position         String
+  points           Int      @default(0)
+  rebounds         Int      @default(0)
+  assists          Int      @default(0)
+  steals           Int      @default(0)
+  blocks           Int      @default(0)
+  turnovers        Int      @default(0)
+  fouls            Int      @default(0)
+  fgMade           Int      @default(0)
+  fgAttempted      Int      @default(0)
+  threeMade        Int      @default(0)
+  threeAttempted   Int      @default(0)
+  ftMade           Int      @default(0)
+  ftAttempted      Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  gameId           String
+  userId           String
+  fg_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
+  three_percentage Decimal? @default(0.00) @db.Decimal(5, 2)
+  ft_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
+  game             Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([gameId, name, team])
   @@map("players")
 }
 
 model Team {
-  id             String   @id @default(cuid())
-  name           String
-  isHome         Boolean
-  points         Int      @default(0)
-  rebounds       Int      @default(0)
-  assists        Int      @default(0)
-  steals         Int      @default(0)
-  blocks         Int      @default(0)
-  turnovers      Int      @default(0)
-  fouls          Int      @default(0)
-  fgMade         Int      @default(0)
-  fgAttempted    Int      @default(0)
-  threeMade      Int      @default(0)
-  threeAttempted Int      @default(0)
-  ftMade         Int      @default(0)
-  ftAttempted    Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  gameId         String
-  userId         String
-  game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  name             String
+  isHome           Boolean
+  points           Int      @default(0)
+  rebounds         Int      @default(0)
+  assists          Int      @default(0)
+  steals           Int      @default(0)
+  blocks           Int      @default(0)
+  turnovers        Int      @default(0)
+  fouls            Int      @default(0)
+  fgMade           Int      @default(0)
+  fgAttempted      Int      @default(0)
+  threeMade        Int      @default(0)
+  threeAttempted   Int      @default(0)
+  ftMade           Int      @default(0)
+  ftAttempted      Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  gameId           String
+  userId           String
+  fg_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
+  three_percentage Decimal? @default(0.00) @db.Decimal(5, 2)
+  ft_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
+  game             Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([gameId, name])
   @@map("teams")
 }
 
 model PlayerMapping {
-  id          String   @id @default(uuid())
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
   userId      String
   gamertag    String
   displayName String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
-  @@unique([userId, gamertag])
-  @@index([userId])
+  @@unique([userId, gamertag], map: "player_mappings_userid_gamertag_key")
+  @@index([userId], map: "player_mappings_userid_idx")
   @@map("player_mappings")
 }
 
 model PlayerStats {
-  id                 String   @id @default(cuid())
-  playerName         String
-  team               String
-  gamesPlayed        Int      @default(0)
-  avgPoints          Float    @default(0)
-  avgRebounds        Float    @default(0)
-  avgAssists         Float    @default(0)
-  avgSteals          Float    @default(0)
-  avgBlocks          Float    @default(0)
-  avgTurnovers       Float    @default(0)
-  avgFouls           Float    @default(0)
-  avgFgPercentage    Float    @default(0)
-  avgThreePercentage Float    @default(0)
-  avgFtPercentage    Float    @default(0)
-  avgPlusMinus       Float    @default(0)
-  totalPoints        Int      @default(0)
-  totalRebounds      Int      @default(0)
-  totalAssists       Int      @default(0)
-  totalSteals        Int      @default(0)
-  totalBlocks        Int      @default(0)
-  totalTurnovers     Int      @default(0)
-  totalFouls         Int      @default(0)
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  userId             String
-  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  playerName          String
+  team                String
+  gamesPlayed         Int      @default(0)
+  avgPoints           Float    @default(0)
+  avgRebounds         Float    @default(0)
+  avgAssists          Float    @default(0)
+  avgSteals           Float    @default(0)
+  avgBlocks           Float    @default(0)
+  avgTurnovers        Float    @default(0)
+  avgFouls            Float    @default(0)
+  avgFgPercentage     Float    @default(0)
+  avgThreePercentage  Float    @default(0)
+  avgFtPercentage     Float    @default(0)
+  avgPlusMinus        Float    @default(0)
+  totalPoints         Int      @default(0)
+  totalRebounds       Int      @default(0)
+  totalAssists        Int      @default(0)
+  totalSteals         Int      @default(0)
+  totalBlocks         Int      @default(0)
+  totalTurnovers      Int      @default(0)
+  totalFouls          Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  userId              String
+  totalfgmade         Int      @default(0)
+  totalfgattempted    Int      @default(0)
+  totalthreemade      Int      @default(0)
+  totalthreeattempted Int      @default(0)
+  totalftmade         Int      @default(0)
+  totalftattempted    Int      @default(0)
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, playerName, team])
+  @@unique([playerName, userId], map: "player_stats_player_name_userid_unique")
   @@map("player_stats")
+}
+
+/// Live table has row level security enabled; Prisma migrations don't manage
+/// RLS policies — see https://pris.ly/d/row-level-security.
+model PlayerTotals {
+  id               String   @id
+  player_id        String
+  player_name      String
+  team             String
+  total_games      Int?     @default(0)
+  total_points     Int?     @default(0)
+  total_assists    Int?     @default(0)
+  total_rebounds   Int?     @default(0)
+  total_steals     Int?     @default(0)
+  total_blocks     Int?     @default(0)
+  total_fouls      Int?     @default(0)
+  total_turnovers  Int?     @default(0)
+  total_fgm        Int?     @default(0)
+  total_fga        Int?     @default(0)
+  total_3pm        Int?     @default(0)
+  total_3pa        Int?     @default(0)
+  total_ftm        Int?     @default(0)
+  total_fta        Int?     @default(0)
+  fg_percentage    Decimal? @default(0.00) @db.Decimal
+  three_percentage Decimal? @default(0.00) @db.Decimal
+  ft_percentage    Decimal? @default(0.00) @db.Decimal
+  createdat        DateTime @default(now()) @db.Timestamp(6)
+  updatedat        DateTime @db.Timestamp(6)
+  userid           String
+  user             User     @relation(fields: [userid], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([player_id, userid], map: "player_totals_player_id_unique")
+  @@index([player_id], map: "idx_player_totals_player_id")
+  @@index([team], map: "idx_player_totals_team")
+  @@index([userid], map: "idx_player_totals_userid")
+  @@map("player_totals")
 }

@@ -1,15 +1,19 @@
+// Validate environment before anything else loads (fails fast on misconfig).
+import { env } from '@/config/env';
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import morgan from 'morgan';
+import pinoHttp from 'pino-http';
 import rateLimit from 'express-rate-limit';
-import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 
 import logger from '@/utils/logger';
+import { pgPool } from '@/services/supabase';
+import { prisma } from '@/services/database';
 
 // Import routes
 import authRoutes from '@/routes/auth';
@@ -18,11 +22,12 @@ import analyticsRoutes from '@/routes/analytics';
 import adminRoutes from '@/routes/admin';
 import mappingsRouter from '@/routes/mappings';
 
-// Load environment variables
-dotenv.config();
-
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = env.PORT;
+
+// Render (and most PaaS) terminate TLS at a proxy; trust the first hop so
+// express-rate-limit and req.ip see the real client, not the proxy address.
+app.set('trust proxy', 1);
 
 // Client SPA build (TanStack Start SPA mode → client/dist/client, with
 // _shell.html as the prerendered app shell).
@@ -71,8 +76,8 @@ app.use((req, res, next) => {
 // CORS configuration. In production the client is served same-origin, so no
 // cross-origin access is needed unless CORS_ORIGIN is set (comma-separated).
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production'
-    ? (process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()) ?? [])
+  origin: env.isProduction
+    ? (env.CORS_ORIGIN?.split(',').map((o) => o.trim()) ?? [])
     : ['http://localhost:3000', 'http://localhost:8080'],
   credentials: true,
 }));
@@ -80,13 +85,13 @@ app.use(cors({
 // Compression middleware
 app.use(compression());
 
-// Logging middleware
-app.use(morgan('combined'));
+// Request logging via pino (structured, correlated with the app logger)
+app.use(pinoHttp({ logger }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'), // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'), // limit each IP to 100 requests per windowMs
+  windowMs: env.RATE_LIMIT_WINDOW_MS ?? 900000, // 15 minutes
+  max: env.RATE_LIMIT_MAX_REQUESTS ?? 100, // limit each IP to N requests per window
   message: {
     success: false,
     error: 'Too many requests from this IP, please try again later.',
@@ -201,20 +206,39 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
 });
 
 // Start server
-app.listen(PORT, () => {
-  logger.info({ port: PORT, env: process.env.NODE_ENV || 'development' }, 'ScoreCheck server started');
+const server = app.listen(PORT, () => {
+  logger.info({ port: PORT, env: env.NODE_ENV }, 'ScoreCheck server started');
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-  process.exit(0);
-});
+// Graceful shutdown: stop accepting connections, drain in-flight requests,
+// then close DB handles. Force-exit if draining stalls.
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, 'Shutting down gracefully');
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT received, shutting down gracefully');
-  process.exit(0);
-});
+  const forceExit = setTimeout(() => {
+    logger.error('Graceful shutdown timed out; forcing exit');
+    process.exit(1);
+  }, 10_000);
+  forceExit.unref();
+
+  server.close(async () => {
+    try {
+      await pgPool.end();
+      await prisma.$disconnect();
+    } catch (err) {
+      logger.error({ err }, 'Error closing database connections during shutdown');
+    } finally {
+      clearTimeout(forceExit);
+      process.exit(0);
+    }
+  });
+}
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
 export default app;
 

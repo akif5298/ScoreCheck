@@ -13,10 +13,35 @@
  */
 
 import sharp from 'sharp';
-import { OLLAMA_BASE_URL, OLLAMA_EXTRACTION_MODEL } from '@/constants';
+import { OLLAMA_BASE_URL, OLLAMA_API_KEY, OLLAMA_EXTRACTION_MODEL, EXTRACTION_TIMEOUT_MS } from '@/constants';
+import { ExtractionUnavailableError } from '@/errors';
 
 export const DEFAULT_MODEL = OLLAMA_EXTRACTION_MODEL;
-const TIMEOUT_MS = 600_000;
+const TIMEOUT_MS = EXTRACTION_TIMEOUT_MS;
+
+// Headers for every call to the extraction host. Adds a bearer token when
+// OLLAMA_API_KEY is set (for a secured/hosted Ollama-compatible endpoint).
+export function ollamaHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (OLLAMA_API_KEY) headers['Authorization'] = `Bearer ${OLLAMA_API_KEY}`;
+  return headers;
+}
+
+// Cheap liveness probe. The extraction pipeline swallows individual call
+// failures into empty results, so upload routes call this first to return a
+// clean 503 when the host is down rather than a confusing empty extraction.
+export async function assertExtractionHostReachable(): Promise<void> {
+  try {
+    const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
+      method: 'GET',
+      headers: ollamaHeaders(),
+      signal: AbortSignal.timeout(3_000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    throw new ExtractionUnavailableError('Extraction service unavailable', err);
+  }
+}
 
 // ── Coordinate constants (calibrated to 4K / 3840x2160 screenshots) ───────────
 // Scale automatically to any resolution at runtime.
@@ -281,7 +306,7 @@ export async function warmupModel(model = DEFAULT_MODEL, keepAlive: string | num
   try {
     const res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ollamaHeaders(),
       body,
       signal: AbortSignal.timeout(180_000),
     });
@@ -297,7 +322,7 @@ export async function unloadModel(model = DEFAULT_MODEL): Promise<void> {
   try {
     const res = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ollamaHeaders(),
       body,
       signal: AbortSignal.timeout(30_000),
     });
@@ -335,7 +360,7 @@ async function ollamaChat(
 
     const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ollamaHeaders(),
       body: JSON.stringify(body),
       signal: controller.signal,
     });

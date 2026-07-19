@@ -13,10 +13,18 @@
 // yes/no classification the fine-tune wasn't trained for.
 // ─────────────────────────────────────────────────────────────────────────────
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+// Sent as `Authorization: Bearer <key>` to the extraction/junk-filter host when
+// set — for a secured/hosted Ollama-compatible endpoint. Unset for local Ollama.
+export const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
 export const OLLAMA_JUNK_FILTER_MODEL = 'minicpm-v:latest';
 export const OLLAMA_EXTRACTION_MODEL  = process.env.OLLAMA_EXTRACTION_MODEL ?? 'scorecheck-ocr-r5:latest';
 export const JUNK_FILTER_TIMEOUT_MS = 15_000;
-export const EXTRACTION_TIMEOUT_MS = 60_000;
+// Per-call ceiling for an extraction request. Generous enough for a cold model
+// (~22s warm) but far below a worker-pinning 10 minutes. Env-overridable.
+export const EXTRACTION_TIMEOUT_MS = parseInt(process.env.EXTRACTION_TIMEOUT_MS || '120000', 10);
+
+// Per-user screenshots processed per rolling day (bounds inference cost/abuse).
+export const EXTRACTION_DAILY_LIMIT = parseInt(process.env.EXTRACTION_DAILY_LIMIT || '50', 10);
 
 // ── File upload ───────────────────────────────────────────────────────────────
 export const ALLOWED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif'] as const;

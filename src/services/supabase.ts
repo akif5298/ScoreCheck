@@ -1,8 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 import { Database } from '@/types/supabase';
 import dotenv from 'dotenv';
-import { Client } from 'pg';
+import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 import logger from '@/utils/logger';
+
+// Minimal shape shared by pg.Pool and a checked-out pg.PoolClient, so CRUD
+// helpers can run either on the pool (default) or inside a transaction's
+// dedicated client when one is passed in.
+export interface Queryable {
+  query<R extends QueryResultRow = any>(
+    text: string,
+    values?: any[],
+  ): Promise<QueryResult<R>>;
+}
 
 // Load environment variables
 dotenv.config();
@@ -17,11 +27,22 @@ export const supabase = createClient<Database>(supabaseUrl, supabasePublishableK
 // Create a service role client for admin operations (bypasses RLS)
 const supabaseServiceRole = createClient<Database>(supabaseUrl, supabaseSecretKey);
 
-// Direct PostgreSQL connection for database operations (exported for analytics queries)
-export const pgClient = new Client({ connectionString: process.env.DATABASE_URL });
+// Connection pool for all database operations. A pool (vs a single Client)
+// survives dropped connections and serves concurrent requests without
+// serializing them on one socket. Transactions check out a dedicated client
+// via pgPool.connect(); everything else uses pgPool.query() directly.
+export const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: parseInt(process.env.PG_POOL_MAX || '10', 10),
+});
 
-// Initialize connection
-pgClient.connect().catch(err => logger.error({ err }, 'PostgreSQL connection failed'));
+// Surface background pool errors (e.g. a backend terminating an idle client)
+// instead of crashing the process.
+pgPool.on('error', (err) => logger.error({ err }, 'Unexpected PostgreSQL pool error'));
+
+// Backwards-compatible alias: pool.query has the same signature as client.query,
+// so every non-transactional call site keeps working unchanged.
+export const pgClient = pgPool;
 
 const SCREENSHOT_BUCKET = 'screenshots';
 // Signed-URL lifetime when serving a screenshot for viewing. Minted fresh on
@@ -153,7 +174,7 @@ export class SupabaseService {
     return result.rows.map((row: any) => row.imageHash as string);
   }
 
-  async createGame(gameData: any) {
+  async createGame(gameData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "userId")
@@ -172,8 +193,8 @@ export class SupabaseService {
         gameData.processed || false,
         gameData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating game');
@@ -181,7 +202,7 @@ export class SupabaseService {
     }
   }
 
-  async createPlayer(playerData: any) {
+  async createPlayer(playerData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO players (
@@ -220,8 +241,8 @@ export class SupabaseService {
         playerData.gameIdFromFile || null,
         playerData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating player');
@@ -229,7 +250,7 @@ export class SupabaseService {
     }
   }
 
-  async createTeam(teamData: any) {
+  async createTeam(teamData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO teams (
@@ -263,8 +284,8 @@ export class SupabaseService {
         teamData.ft_percentage || 0.00,
         teamData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating team');
@@ -280,23 +301,26 @@ export class SupabaseService {
     homeTeamData: any,
     awayTeamData: any,
   ): Promise<{ game: any; players: any[] }> {
-    await pgClient.query('BEGIN');
+    const client = await pgPool.connect();
     try {
-      const game = await this.createGame(gameData);
-      const players = await Promise.all(playersData.map(p => this.createPlayer(p)));
+      await client.query('BEGIN');
+      const game = await this.createGame(gameData, client);
+      const players = await Promise.all(playersData.map(p => this.createPlayer(p, client)));
       await Promise.all([
-        this.createTeam(homeTeamData),
-        this.createTeam(awayTeamData),
+        this.createTeam(homeTeamData, client),
+        this.createTeam(awayTeamData, client),
       ]);
-      await pgClient.query('COMMIT');
+      await client.query('COMMIT');
       return { game, players };
     } catch (error) {
       try {
-        await pgClient.query('ROLLBACK');
+        await client.query('ROLLBACK');
       } catch (rollbackErr) {
         logger.error({ err: rollbackErr }, 'Transaction rollback failed after game save error');
       }
       throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -636,7 +660,7 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStatsFromTotals(userId: string, allowedNames: string[]) {
+  async updatePlayerStatsFromTotals(userId: string, allowedNames: string[], db: Queryable = pgClient) {
     if (allowedNames.length === 0) return { rowCount: 0 };
     try {
       const query = `
@@ -766,7 +790,7 @@ export class SupabaseService {
           "updatedAt" = CURRENT_TIMESTAMP
       `;
 
-      const result = await pgClient.query(query, [userId, allowedNames]);
+      const result = await db.query(query, [userId, allowedNames]);
       return result;
     } catch (error) {
       logger.error({ err: error }, 'Error running bulk update of player_stats from player_totals');
@@ -775,8 +799,11 @@ export class SupabaseService {
   }
 
   async startGameEdit(gameId: string, userId: string, allowedNames: string[]) {
+    const client = await pgPool.connect();
+    // Local alias: every inline `pgClient.query` below runs on this dedicated
+    // transaction client, not the shared pool.
+    const pgClient = client;
     try {
-      // Start a transaction
       await pgClient.query('BEGIN');
 
       // Get the current game data (owner-scoped)
@@ -886,12 +913,17 @@ export class SupabaseService {
       await pgClient.query('ROLLBACK');
       logger.error({ err: error }, 'Error starting game edit');
       throw error;
+    } finally {
+      client.release();
     }
   }
 
   async updateGame(gameId: string, userId: string, allowedNames: string[], updateData: any) {
+    const client = await pgPool.connect();
+    // Local alias: every inline `pgClient.query` below runs on this dedicated
+    // transaction client, not the shared pool.
+    const pgClient = client;
     try {
-      // Start a transaction
       await pgClient.query('BEGIN');
 
       // First, get the current game data to see what we're replacing (owner-scoped)
@@ -1215,14 +1247,14 @@ export class SupabaseService {
         await pgClient.query(insertAwayTeamQuery, awayTeamValues);
       }
 
-      // Rebuild player_stats from player_totals for this user's tracked names.
-      // Runs on the same client, so it participates in this transaction.
-      await this.updatePlayerStatsFromTotals(userId, allowedNames);
+      // Rebuild player_stats from player_totals for this user's tracked names,
+      // on the transaction client so it participates in this transaction.
+      await this.updatePlayerStatsFromTotals(userId, allowedNames, client);
 
       // Commit the transaction
       await pgClient.query('COMMIT');
 
-      // Return the updated game with players
+      // Return the updated game with players (post-commit read on the pool)
       const updatedGame = await this.getGameById(gameId, userId);
       return updatedGame;
     } catch (error) {
@@ -1230,6 +1262,8 @@ export class SupabaseService {
       await pgClient.query('ROLLBACK');
       logger.error({ err: error }, 'Error updating game');
       throw error;
+    } finally {
+      client.release();
     }
   }
 

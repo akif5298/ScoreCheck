@@ -10,8 +10,9 @@ import BoxScoreParser from '@/services/boxScoreParser';
 import { authenticateToken } from '@/middleware/auth';
 import { ApiResponse, Game, Player } from '@/types';
 import { classifyScreenshot } from '@/services/junkFilter';
+import { assertExtractionHostReachable } from '@/services/ollamaExtractor';
 import { computePerceptualHash, hammingDistance } from '@/utils/imageHash';
-import { ValidationError } from '@/errors';
+import { ValidationError, ExtractionUnavailableError } from '@/errors';
 import logger from '@/utils/logger';
 import {
   getMappingsForUser,
@@ -23,6 +24,7 @@ import {
   MAX_FILE_SIZE_BYTES,
   UPLOAD_RATE_LIMIT_WINDOW_MS,
   UPLOAD_RATE_LIMIT_MAX,
+  EXTRACTION_DAILY_LIMIT,
 } from '@/constants';
 
 const router = Router();
@@ -51,14 +53,52 @@ interface IncomingPlayerData {
   ftAttempted?: number;
 }
 
-// Rate limiter applied only to upload endpoints (stricter than the global limiter)
+// Rate limiter applied only to upload endpoints (stricter than the global
+// limiter). Keyed by user id (these routes always run after authenticateToken)
+// so it's a true per-user limit, not per-IP behind Render's shared proxy.
 const uploadRateLimit = rateLimit({
   windowMs: UPLOAD_RATE_LIMIT_WINDOW_MS,
   max: UPLOAD_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req: Request) => req.user?.userId ?? 'anonymous',
   message: { success: false, error: 'Too many uploads. Please wait a minute and try again.' },
 });
+
+// Per-user daily extraction quota. In-memory (single-instance only, like
+// pendingHashes above) — bounds inference cost/abuse; a Redis-backed version is
+// future work alongside an async extraction queue.
+const extractionCounts = new Map<string, { day: string; count: number }>();
+
+function todayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function extractionUsedToday(userId: string): number {
+  const entry = extractionCounts.get(userId);
+  return entry && entry.day === todayKey() ? entry.count : 0;
+}
+
+function recordExtractions(userId: string, n: number): void {
+  const day = todayKey();
+  const entry = extractionCounts.get(userId);
+  if (entry && entry.day === day) entry.count += n;
+  else extractionCounts.set(userId, { day, count: n });
+}
+
+// Gate: rejects when the user is already at their daily limit. Per-file counts
+// are recorded by the handlers after extraction actually runs.
+function extractionQuota(req: Request, res: Response, next: () => void): void {
+  const userId = req.user?.userId;
+  if (userId && extractionUsedToday(userId) >= EXTRACTION_DAILY_LIMIT) {
+    res.status(429).json({
+      success: false,
+      error: `Daily extraction limit reached (${EXTRACTION_DAILY_LIMIT}/day). Try again tomorrow.`,
+    } as ApiResponse);
+    return;
+  }
+  next();
+}
 
 // Rejects buffers whose magic bytes don't match an allowed image type.
 async function validateMagicBytes(buffer: Buffer): Promise<void> {
@@ -115,7 +155,7 @@ const upload = multer({
 
 
 // Upload and process multiple box score screenshots for review
-router.post('/upload-multiple', authenticateToken, uploadRateLimit, upload.array('screenshots', 10), async (req: Request, res: Response) => {
+router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQuota, upload.array('screenshots', 10), async (req: Request, res: Response) => {
   try {
     const files = req.files as Express.Multer.File[];
 
@@ -134,6 +174,10 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, upload.array
       };
       return res.status(401).json(response);
     }
+
+    // Fail fast with a clean 503 if the extraction host is down (the per-call
+    // paths below swallow failures into empty results).
+    await assertExtractionHostReachable();
 
     // Process files in batches of 2
     const results = [];
@@ -188,6 +232,8 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, upload.array
       results.push(...batchResults);
     }
 
+    recordExtractions(req.user.userId, results.length);
+
     const response: ApiResponse = {
       success: true,
       data: {
@@ -198,6 +244,13 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, upload.array
 
     return res.json(response);
   } catch (error) {
+    if (error instanceof ExtractionUnavailableError) {
+      logger.warn('Extraction host unreachable on upload-multiple');
+      return res.status(503).json({
+        success: false,
+        error: 'Extraction service is temporarily unavailable. Please try again shortly.',
+      } as ApiResponse);
+    }
     logger.error({ err: error }, 'Multiple upload error');
     const response: ApiResponse = {
       success: false,
@@ -208,7 +261,7 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, upload.array
 });
 
 // Keep the original single upload for backward compatibility
-router.post('/upload', authenticateToken, uploadRateLimit, upload.single('screenshot'), async (req: Request, res: Response) => {
+router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, upload.single('screenshot'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       const response: ApiResponse = {
@@ -225,6 +278,9 @@ router.post('/upload', authenticateToken, uploadRateLimit, upload.single('screen
       };
       return res.status(401).json(response);
     }
+
+    // Fail fast with a clean 503 if the extraction host is down.
+    await assertExtractionHostReachable();
 
     // Reject files whose bytes don't match an image type before hitting OCR
     await validateMagicBytes(req.file.buffer);
@@ -306,9 +362,11 @@ router.post('/upload', authenticateToken, uploadRateLimit, upload.single('screen
     // Extract image number for consistent ID generation
     const imageNumber = extractImageNumber(req.file.originalname);
 
-    // Return the extracted data for review instead of saving to database
-    // IMPORTANT: Use custom team names from EnhancedOCRService, not generic ones from BoxScoreParser
-    const originalImageUrl = `data:image/jpeg;base64,${req.file.buffer.toString('base64')}`;
+    // Persist the screenshot to Supabase Storage and key the review response by
+    // its object path (stored in games.screenshotUrl on save — never base64).
+    const ext = req.file.originalname.split('.').pop() || 'jpg';
+    const objectPath = `${req.user.userId}-${imageNumber}-boxscore.${ext}`;
+    const originalImageUrl = await supabaseService.uploadImage(req.file.buffer, objectPath);
     pendingHashes.set(originalImageUrl, imageHash);
     const responseData = {
       extractedData: {
@@ -325,6 +383,8 @@ router.post('/upload', authenticateToken, uploadRateLimit, upload.single('screen
       originalFileName: req.file.originalname,
     };
 
+    recordExtractions(req.user.userId, 1);
+
     // Explicitly prevent caching of dynamic OCR results
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -332,6 +392,14 @@ router.post('/upload', authenticateToken, uploadRateLimit, upload.single('screen
     res.setHeader('Surrogate-Control', 'no-store');
     return res.status(200).json(responseData);
   } catch (error) {
+    if (error instanceof ExtractionUnavailableError) {
+      logger.warn('Extraction host unreachable on upload');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(503).json({
+        success: false,
+        error: 'Extraction service is temporarily unavailable. Please try again shortly.',
+      } as ApiResponse);
+    }
     logger.error({ err: error }, 'Screenshot processing error');
 
     const response: ApiResponse = {
@@ -788,6 +856,33 @@ router.get('/games/:gameId', authenticateToken, async (req: Request, res: Respon
     };
 
     return res.status(500).json(response);
+  }
+});
+
+// Mint a fresh signed URL for a game's stored screenshot (owner-scoped).
+// games.screenshotUrl holds an object path, not a viewable URL.
+router.get('/games/:gameId/screenshot', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const { gameId } = req.params;
+
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' } as ApiResponse);
+    }
+
+    const game = await supabaseService.getGameById(gameId!, req.user.userId);
+    if (!game) {
+      return res.status(404).json({ success: false, error: 'Game not found' } as ApiResponse);
+    }
+
+    const url = await supabaseService.getSignedUrl(game.screenshotUrl);
+    if (!url) {
+      return res.status(404).json({ success: false, error: 'No screenshot for this game' } as ApiResponse);
+    }
+
+    return res.status(200).json({ success: true, data: { url } } as ApiResponse);
+  } catch (error) {
+    logger.error({ err: error }, 'Error signing screenshot URL');
+    return res.status(500).json({ success: false, error: 'Failed to load screenshot' } as ApiResponse);
   }
 });
 

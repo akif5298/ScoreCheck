@@ -24,6 +24,21 @@ export class OllamaError extends Error {
   }
 }
 
+/**
+ * The extraction host (Ollama-compatible endpoint) was unreachable or timed
+ * out — as opposed to reachable-but-returned-bad-output (OllamaError). Upload
+ * routes translate this into a 503 so the client shows a clean "try again"
+ * state instead of a generic 500.
+ */
+export class ExtractionUnavailableError extends Error {
+  readonly cause: unknown;
+  constructor(message = 'Extraction service unavailable', cause?: unknown) {
+    super(message);
+    this.name = 'ExtractionUnavailableError';
+    this.cause = cause;
+  }
+}
+
 export class PreprocessorError extends Error {
   readonly exitCode: number | undefined;
   readonly stderr: string;

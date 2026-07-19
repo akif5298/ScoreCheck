@@ -90,22 +90,6 @@ export function AppShell({
                 );
               })}
           </ul>
-
-          <div className="stamp px-3 pb-2 pt-6">Pipeline</div>
-          <div className="rounded-md border border-border bg-background p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium">Status</span>
-              <span className="flex items-center gap-1.5 text-xs">
-                <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                <span className="text-muted-foreground">Online</span>
-              </span>
-            </div>
-            <div className="mt-3 space-y-1.5">
-              <Row k="GCV avg" v="11.8s" />
-              <Row k="Junk filter" v="1.4s" />
-              <Row k="Accuracy" v="98.6%" />
-            </div>
-          </div>
         </nav>
 
         <div className="border-t border-border p-3">
@@ -190,15 +174,6 @@ export function AppShell({
           </div>
         </footer>
       </div>
-    </div>
-  );
-}
-
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="text-muted-foreground">{k}</span>
-      <span className="font-mono tabular-nums">{v}</span>
     </div>
   );
 }

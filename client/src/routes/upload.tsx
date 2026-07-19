@@ -1,5 +1,6 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AppShell, Card, Badge } from "@/components/app-shell";
 import { api } from "@/lib/api";
 
@@ -16,18 +17,6 @@ export const Route = createFileRoute("/upload")({
   }),
   component: UploadPage,
 });
-
-const ALLOWED_PLAYER_NAMES = [
-  "Akif",
-  "Anis",
-  "Abdul",
-  "Ikroop",
-  "Nillan",
-  "Dylan",
-  "Ankit",
-  "TV",
-  "Kashif",
-] as const;
 
 interface ExtractedPlayer {
   id?: string;
@@ -63,6 +52,18 @@ interface UploadResponse {
 type Stage = "idle" | "uploading" | "review" | "saving" | "saved" | "error";
 
 function UploadPage() {
+  // Assignable names come from the user's gamertag mappings (roster page)
+  const { data: mappings = [] } = useQuery({
+    queryKey: ["mappings"],
+    queryFn: () =>
+      api
+        .get<{ success: boolean; data: { id: string; gamertag: string; displayName: string }[] }>(
+          "/api/mappings",
+        )
+        .then((r) => r.data),
+  });
+  const allowedNames = Array.from(new Set(mappings.map((m) => m.displayName))).sort();
+
   const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("idle");
   const [filename, setFilename] = useState("");
@@ -280,6 +281,18 @@ function UploadPage() {
           </Card>
 
           <Card title="Player stats" hint={`${players.length} rows · assign names + correct stats`}>
+            {allowedNames.length === 0 && (
+              <div className="mb-4 rounded-md border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+                No mapped players yet — totals and analytics only track names from your{" "}
+                <Link
+                  to="/roster"
+                  className="font-medium text-foreground underline-offset-4 hover:underline"
+                >
+                  roster mappings
+                </Link>
+                . Add gamertag → name mappings first so assigned stats count.
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -306,15 +319,14 @@ function UploadPage() {
                           className="w-full rounded border border-border bg-background px-2 py-1 text-sm focus:border-foreground focus:outline-none"
                         >
                           <option value="">— assign —</option>
-                          {ALLOWED_PLAYER_NAMES.map((n) => (
+                          {allowedNames.map((n) => (
                             <option key={n} value={n}>
                               {n}
                             </option>
                           ))}
-                          {p.name &&
-                            !ALLOWED_PLAYER_NAMES.includes(
-                              p.name as (typeof ALLOWED_PLAYER_NAMES)[number],
-                            ) && <option value={p.name}>{p.name} (OCR)</option>}
+                          {p.name && !allowedNames.includes(p.name) && (
+                            <option value={p.name}>{p.name} (OCR)</option>
+                          )}
                         </select>
                       </td>
                       <td className="py-2 pr-3 text-xs text-muted-foreground">{p.team}</td>

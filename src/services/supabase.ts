@@ -1,8 +1,18 @@
 import { createClient } from '@supabase/supabase-js';
 import { Database } from '@/types/supabase';
 import dotenv from 'dotenv';
-import { Client } from 'pg';
+import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 import logger from '@/utils/logger';
+
+// Minimal shape shared by pg.Pool and a checked-out pg.PoolClient, so CRUD
+// helpers can run either on the pool (default) or inside a transaction's
+// dedicated client when one is passed in.
+export interface Queryable {
+  query<R extends QueryResultRow = any>(
+    text: string,
+    values?: any[],
+  ): Promise<QueryResult<R>>;
+}
 
 // Load environment variables
 dotenv.config();
@@ -17,20 +27,41 @@ export const supabase = createClient<Database>(supabaseUrl, supabasePublishableK
 // Create a service role client for admin operations (bypasses RLS)
 const supabaseServiceRole = createClient<Database>(supabaseUrl, supabaseSecretKey);
 
-// Direct PostgreSQL connection for database operations (exported for analytics queries)
-export const pgClient = new Client({ connectionString: process.env.DATABASE_URL });
+// Connection pool for all database operations. A pool (vs a single Client)
+// survives dropped connections and serves concurrent requests without
+// serializing them on one socket. Transactions check out a dedicated client
+// via pgPool.connect(); everything else uses pgPool.query() directly.
+export const pgPool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: parseInt(process.env.PG_POOL_MAX || '10', 10),
+});
 
-// Initialize connection
-pgClient.connect().catch(err => logger.error({ err }, 'PostgreSQL connection failed'));
+// Surface background pool errors (e.g. a backend terminating an idle client)
+// instead of crashing the process.
+pgPool.on('error', (err) => logger.error({ err }, 'Unexpected PostgreSQL pool error'));
+
+// Backwards-compatible alias: pool.query has the same signature as client.query,
+// so every non-transactional call site keeps working unchanged.
+export const pgClient = pgPool;
+
+const SCREENSHOT_BUCKET = 'screenshots';
+// Signed-URL lifetime when serving a screenshot for viewing. Minted fresh on
+// every read, so short is fine — this is not what's persisted in the DB.
+const SIGNED_URL_TTL_SECONDS = 3600;
 
 export class SupabaseService {
   // File Storage Methods
-  async uploadImage(file: Buffer, fileName: string, bucket: string = 'screenshots'): Promise<string> {
+  //
+  // Screenshots live in Supabase Storage. We persist the object PATH (e.g.
+  // "<userId>-1-boxscore.jpg") in games.screenshotUrl — never a signed URL,
+  // which would expire — and mint a fresh signed URL at read time via
+  // getSignedUrl().
+  async uploadImage(file: Buffer, fileName: string, bucket: string = SCREENSHOT_BUCKET): Promise<string> {
     try {
       // Detect MIME type from file extension
       const fileExtension = fileName.split('.').pop()?.toLowerCase();
       let contentType = 'image/jpeg'; // default
-      
+
       if (fileExtension === 'png') {
         contentType = 'image/png';
       } else if (fileExtension === 'gif') {
@@ -38,13 +69,13 @@ export class SupabaseService {
       } else if (fileExtension === 'jpg' || fileExtension === 'jpeg') {
         contentType = 'image/jpeg';
       }
-      
-      // Try Supabase storage with service role (bypasses RLS)
-      const { data, error } = await supabaseServiceRole.storage
+
+      // Service-role client bypasses RLS
+      const { error } = await supabaseServiceRole.storage
         .from(bucket)
         .upload(fileName, file, {
           contentType,
-          upsert: true
+          upsert: true,
         });
 
       if (error) {
@@ -52,25 +83,40 @@ export class SupabaseService {
         throw error;
       }
 
-      // For private buckets, we need to generate a signed URL
-      // This creates a temporary URL that expires after 1 hour
-      const { data: signedUrlData, error: signedUrlError } = await supabaseServiceRole.storage
-        .from(bucket)
-        .createSignedUrl(fileName, 3600); // 1 hour expiry
-
-      if (signedUrlError) {
-        logger.error({ err: signedUrlError }, 'Failed to generate signed URL');
-        // Fallback: try to construct the URL manually
-        const projectRef = process.env.SUPABASE_URL?.split('//')[1]?.split('.')[0];
-        const fallbackUrl = `https://${projectRef}.supabase.co/storage/v1/object/sign/${bucket}/${fileName}`;
-        return fallbackUrl;
-      }
-
-      return signedUrlData.signedUrl;
+      // Return the object path; the caller persists this, not a signed URL.
+      return fileName;
     } catch (error) {
       logger.error({ err: error }, 'Supabase storage upload failed');
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(`Failed to upload image to Supabase: ${errorMessage}`);
+    }
+  }
+
+  // Mints a short-lived signed URL for a stored object path. Returns null when
+  // the path is empty or Supabase can't sign it (e.g. object was deleted).
+  async getSignedUrl(
+    objectPath: string,
+    bucket: string = SCREENSHOT_BUCKET,
+    expiresIn: number = SIGNED_URL_TTL_SECONDS,
+  ): Promise<string | null> {
+    if (!objectPath) return null;
+    // Legacy rows may still hold a full URL or a base64 data URI; pass those
+    // through unchanged rather than trying to sign them.
+    if (objectPath.startsWith('http') || objectPath.startsWith('data:')) {
+      return objectPath;
+    }
+    try {
+      const { data, error } = await supabaseServiceRole.storage
+        .from(bucket)
+        .createSignedUrl(objectPath, expiresIn);
+      if (error || !data) {
+        logger.error({ err: error, objectPath }, 'Failed to generate signed URL');
+        return null;
+      }
+      return data.signedUrl;
+    } catch (error) {
+      logger.error({ err: error, objectPath }, 'Failed to generate signed URL');
+      return null;
     }
   }
 
@@ -93,67 +139,31 @@ export class SupabaseService {
   }
 
   // Database Methods using direct PostgreSQL connection
-  async createUser(userData: any) {
-    try {
-      // First check if user with this email already exists
-      const existingUserQuery = 'SELECT * FROM users WHERE email = $1';
-      const existingUser = await pgClient.query(existingUserQuery, [userData.email]);
-      
-      if (existingUser.rows.length > 0) {
-        // User exists, update their appleId if needed and return them
-        const existingUserData = existingUser.rows[0];
-        if (!existingUserData.appleId && userData.appleId) {
-          const updateQuery = 'UPDATE users SET "appleId" = $1, "updatedAt" = NOW() WHERE id = $2 RETURNING *';
-          const updateResult = await pgClient.query(updateQuery, [userData.appleId, existingUserData.id]);
-          return updateResult.rows[0];
-        }
-        return existingUserData;
-      }
-      
-      // Create new user
-      const query = `
-        INSERT INTO users (id, email, "appleId", name, role, "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-        RETURNING *
-      `;
-      const values = [userData.appleId, userData.email, userData.appleId, userData.name, userData.role || 'USER'];
-      
-      const result = await pgClient.query(query, values);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error creating user');
-      throw error;
-    }
+  async createLocalUser(userData: { email: string; name: string | null; passwordHash: string }) {
+    const query = `
+      INSERT INTO users (id, email, name, role, "passwordHash", "createdAt", "updatedAt")
+      VALUES (gen_random_uuid()::text, LOWER($1), $2, 'USER', $3, NOW(), NOW())
+      RETURNING *
+    `;
+    const result = await pgClient.query(query, [userData.email, userData.name, userData.passwordHash]);
+    return result.rows[0];
   }
 
-  async findUserByAppleId(appleId: string) {
-    try {
-      const query = 'SELECT * FROM users WHERE "appleId" = $1';
-      const result = await pgClient.query(query, [appleId]);
-      return result.rows[0] || null;
-    } catch (error) {
-      logger.error({ err: error }, 'Error finding user by Apple ID');
-      return null;
-    }
+  async findUserByEmail(email: string) {
+    const result = await pgClient.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    return result.rows[0] || null;
   }
 
-  async updateUser(userId: string, updateData: any) {
-    try {
-      const fields = Object.keys(updateData).map((key, index) => `${key} = $${index + 2}`);
-      const values = Object.values(updateData);
-      const query = `
-        UPDATE users 
-        SET ${fields.join(', ')}, updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `;
-      
-      const result = await pgClient.query(query, [userId, ...values]);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error updating user');
-      throw error;
-    }
+  async findUserById(userId: string) {
+    const result = await pgClient.query('SELECT * FROM users WHERE id = $1', [userId]);
+    return result.rows[0] || null;
+  }
+
+  async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
+    await pgClient.query(
+      'UPDATE users SET "passwordHash" = $2, "updatedAt" = NOW() WHERE id = $1',
+      [userId, passwordHash],
+    );
   }
 
   async getGameHashesByUserId(userId: string): Promise<string[]> {
@@ -164,7 +174,7 @@ export class SupabaseService {
     return result.rows.map((row: any) => row.imageHash as string);
   }
 
-  async createGame(gameData: any) {
+  async createGame(gameData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "userId")
@@ -183,8 +193,8 @@ export class SupabaseService {
         gameData.processed || false,
         gameData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating game');
@@ -192,7 +202,7 @@ export class SupabaseService {
     }
   }
 
-  async createPlayer(playerData: any) {
+  async createPlayer(playerData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO players (
@@ -231,8 +241,8 @@ export class SupabaseService {
         playerData.gameIdFromFile || null,
         playerData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating player');
@@ -240,7 +250,7 @@ export class SupabaseService {
     }
   }
 
-  async createTeam(teamData: any) {
+  async createTeam(teamData: any, db: Queryable = pgClient) {
     try {
       const query = `
         INSERT INTO teams (
@@ -274,8 +284,8 @@ export class SupabaseService {
         teamData.ft_percentage || 0.00,
         teamData.userId
       ];
-      
-      const result = await pgClient.query(query, values);
+
+      const result = await db.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating team');
@@ -291,23 +301,26 @@ export class SupabaseService {
     homeTeamData: any,
     awayTeamData: any,
   ): Promise<{ game: any; players: any[] }> {
-    await pgClient.query('BEGIN');
+    const client = await pgPool.connect();
     try {
-      const game = await this.createGame(gameData);
-      const players = await Promise.all(playersData.map(p => this.createPlayer(p)));
+      await client.query('BEGIN');
+      const game = await this.createGame(gameData, client);
+      const players = await Promise.all(playersData.map(p => this.createPlayer(p, client)));
       await Promise.all([
-        this.createTeam(homeTeamData),
-        this.createTeam(awayTeamData),
+        this.createTeam(homeTeamData, client),
+        this.createTeam(awayTeamData, client),
       ]);
-      await pgClient.query('COMMIT');
+      await client.query('COMMIT');
       return { game, players };
     } catch (error) {
       try {
-        await pgClient.query('ROLLBACK');
+        await client.query('ROLLBACK');
       } catch (rollbackErr) {
         logger.error({ err: rollbackErr }, 'Transaction rollback failed after game save error');
       }
       throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -473,26 +486,6 @@ export class SupabaseService {
     } catch (error) {
       logger.error({ err: error }, 'Error getting games by user ID');
       return [];
-    }
-  }
-
-  async getDashboardStats() {
-    try {
-      const query = `
-        SELECT 
-          COUNT(DISTINCT g.id) as total_games,
-          COUNT(DISTINCT p.id) as total_players,
-          COUNT(DISTINCT t.id) as total_teams
-        FROM games g
-        LEFT JOIN players p ON g.id = p."gameId"
-        LEFT JOIN teams t ON g.id = t."gameId"
-      `;
-      
-      const result = await pgClient.query(query);
-      return result.rows[0];
-    } catch (error) {
-      logger.error({ err: error }, 'Error getting dashboard stats');
-      return { total_games: 0, total_players: 0, total_teams: 0 };
     }
   }
 
@@ -667,7 +660,8 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStatsFromTotals(userId: string) {
+  async updatePlayerStatsFromTotals(userId: string, allowedNames: string[], db: Queryable = pgClient) {
+    if (allowedNames.length === 0) return { rowCount: 0 };
     try {
       const query = `
         INSERT INTO public.player_stats (
@@ -764,9 +758,9 @@ export class SupabaseService {
           pt.total_ftm as "totalftmade",
           pt.total_fta as "totalftattempted"
         FROM public.player_totals pt
-        WHERE pt.player_name IN ('Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif')
+        WHERE pt.player_name = ANY($2)
         AND pt.userid = $1
-        ON CONFLICT ("playerName", "userId") 
+        ON CONFLICT ("playerName", "userId")
         DO UPDATE SET
           team = EXCLUDED.team,
           "gamesPlayed" = EXCLUDED."gamesPlayed",
@@ -795,8 +789,8 @@ export class SupabaseService {
           "totalftattempted" = EXCLUDED."totalftattempted",
           "updatedAt" = CURRENT_TIMESTAMP
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await db.query(query, [userId, allowedNames]);
       return result;
     } catch (error) {
       logger.error({ err: error }, 'Error running bulk update of player_stats from player_totals');
@@ -804,36 +798,39 @@ export class SupabaseService {
     }
   }
 
-  async startGameEdit(gameId: string) {
+  async startGameEdit(gameId: string, userId: string, allowedNames: string[]) {
+    const client = await pgPool.connect();
+    // Local alias: every inline `pgClient.query` below runs on this dedicated
+    // transaction client, not the shared pool.
+    const pgClient = client;
     try {
-      // Start a transaction
       await pgClient.query('BEGIN');
 
-      // Get the current game data
+      // Get the current game data (owner-scoped)
       const currentGameQuery = `
         SELECT g.*, json_agg(p.*) as players
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId]);
+      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
       const currentGame = currentGameResult.rows[0];
-      
+
       if (!currentGame) {
         await pgClient.query('ROLLBACK');
         return null;
       }
 
-      // List of players we care about for totals
-      const trackedPlayers = ['Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif'];
-      
+      // Players tracked for totals: the user's mapped display names
+      const trackedPlayers = allowedNames;
+
       // Get current player totals for tracked players
       const currentTotalsQuery = `
-        SELECT * FROM player_totals 
+        SELECT * FROM player_totals
         WHERE player_name = ANY($1) AND userid = $2
       `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, currentGame.userId]);
+      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
       const currentTotals = currentTotalsResult.rows;
 
       // Create a map of current totals by player name
@@ -916,39 +913,44 @@ export class SupabaseService {
       await pgClient.query('ROLLBACK');
       logger.error({ err: error }, 'Error starting game edit');
       throw error;
+    } finally {
+      client.release();
     }
   }
 
-  async updateGame(gameId: string, updateData: any) {
+  async updateGame(gameId: string, userId: string, allowedNames: string[], updateData: any) {
+    const client = await pgPool.connect();
+    // Local alias: every inline `pgClient.query` below runs on this dedicated
+    // transaction client, not the shared pool.
+    const pgClient = client;
     try {
-      // Start a transaction
       await pgClient.query('BEGIN');
 
-      // First, get the current game data to see what we're replacing
+      // First, get the current game data to see what we're replacing (owner-scoped)
       const currentGameQuery = `
         SELECT g.*, json_agg(p.*) as players
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId]);
+      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
       const currentGame = currentGameResult.rows[0];
-      
+
       if (!currentGame) {
         await pgClient.query('ROLLBACK');
         return null;
       }
 
-      // List of players we care about for totals
-      const trackedPlayers = ['Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif'];
-      
+      // Players tracked for totals: the user's mapped display names
+      const trackedPlayers = allowedNames;
+
       // Get current player totals for tracked players
       const currentTotalsQuery = `
-        SELECT * FROM player_totals 
+        SELECT * FROM player_totals
         WHERE player_name = ANY($1) AND userid = $2
       `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, currentGame.userId]);
+      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
       const currentTotals = currentTotalsResult.rows;
 
       // Create a map of current totals by player name
@@ -1245,163 +1247,40 @@ export class SupabaseService {
         await pgClient.query(insertAwayTeamQuery, awayTeamValues);
       }
 
-      // Run the SQL query to update player_stats/averages
-      const updatePlayerStatsQuery = `
-        INSERT INTO public.player_stats (
-          id,
-          "playerName",
-          team,
-          "gamesPlayed",
-          "avgPoints",
-          "avgRebounds",
-          "avgAssists",
-          "avgSteals",
-          "avgBlocks",
-          "avgTurnovers",
-          "avgFouls",
-          "avgFgPercentage",
-          "avgThreePercentage",
-          "avgFtPercentage",
-          "avgPlusMinus",
-          "totalPoints",
-          "totalRebounds",
-          "totalAssists",
-          "totalSteals",
-          "totalBlocks",
-          "totalTurnovers",
-          "totalFouls",
-          "createdAt",
-          "updatedAt",
-          "userId",
-          "totalfgmade",
-          "totalfgattempted",
-          "totalthreemade",
-          "totalthreeattempted",
-          "totalftmade",
-          "totalftattempted"
-        )
-        SELECT 
-          gen_random_uuid()::text as id,
-          pt.player_name as "playerName",
-          pt.team,
-          pt.total_games as "gamesPlayed",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_points::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgPoints",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_rebounds::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgRebounds",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_assists::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgAssists",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_steals::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgSteals",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_blocks::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgBlocks",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_turnovers::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgTurnovers",
-          CASE 
-            WHEN pt.total_games > 0 THEN 
-              ROUND((pt.total_fouls::numeric / pt.total_games), 2)
-            ELSE 0.00 
-          END as "avgFouls",
-          pt.fg_percentage as "avgFgPercentage",
-          pt.three_percentage as "avgThreePercentage",
-          pt.ft_percentage as "avgFtPercentage",
-          0.00 as "avgPlusMinus",
-          pt.total_points as "totalPoints",
-          pt.total_rebounds as "totalRebounds",
-          pt.total_assists as "totalAssists",
-          pt.total_steals as "totalSteals",
-          pt.total_blocks as "totalBlocks",
-          pt.total_turnovers as "totalTurnovers",
-          pt.total_fouls as "totalFouls",
-          CURRENT_TIMESTAMP as "createdAt",
-          CURRENT_TIMESTAMP as "updatedAt",
-          pt.userid as "userId",
-          pt.total_fgm as "totalfgmade",
-          pt.total_fga as "totalfgattempted",
-          pt.total_3pm as "totalthreemade",
-          pt.total_3pa as "totalthreeattempted",
-          pt.total_ftm as "totalftmade",
-          pt.total_fta as "totalftattempted"
-        FROM public.player_totals pt
-        WHERE pt.player_name IN ('Akif', 'Abdul', 'Anis', 'Nillan', 'Ikroop', 'Ankit', 'Dylan', 'Kashif')
-        ON CONFLICT ("playerName", "userId") 
-        DO UPDATE SET
-          team = EXCLUDED.team,
-          "gamesPlayed" = EXCLUDED."gamesPlayed",
-          "avgPoints" = EXCLUDED."avgPoints",
-          "avgRebounds" = EXCLUDED."avgRebounds",
-          "avgAssists" = EXCLUDED."avgAssists",
-          "avgSteals" = EXCLUDED."avgSteals",
-          "avgBlocks" = EXCLUDED."avgBlocks",
-          "avgTurnovers" = EXCLUDED."avgTurnovers",
-          "avgFouls" = EXCLUDED."avgFouls",
-          "avgFgPercentage" = EXCLUDED."avgFgPercentage",
-          "avgThreePercentage" = EXCLUDED."avgThreePercentage",
-          "avgFtPercentage" = EXCLUDED."avgFtPercentage",
-          "totalPoints" = EXCLUDED."totalPoints",
-          "totalRebounds" = EXCLUDED."totalRebounds",
-          "totalAssists" = EXCLUDED."totalAssists",
-          "totalSteals" = EXCLUDED."totalSteals",
-          "totalBlocks" = EXCLUDED."totalBlocks",
-          "totalTurnovers" = EXCLUDED."totalTurnovers",
-          "totalFouls" = EXCLUDED."totalFouls",
-          "totalfgmade" = EXCLUDED."totalfgmade",
-          "totalfgattempted" = EXCLUDED."totalfgattempted",
-          "totalthreemade" = EXCLUDED."totalthreemade",
-          "totalthreeattempted" = EXCLUDED."totalthreeattempted",
-          "totalftmade" = EXCLUDED."totalftmade",
-          "totalftattempted" = EXCLUDED."totalftattempted",
-          "updatedAt" = CURRENT_TIMESTAMP;
-      `;
-
-      await pgClient.query(updatePlayerStatsQuery);
+      // Rebuild player_stats from player_totals for this user's tracked names,
+      // on the transaction client so it participates in this transaction.
+      await this.updatePlayerStatsFromTotals(userId, allowedNames, client);
 
       // Commit the transaction
       await pgClient.query('COMMIT');
 
-      // Return the updated game with players
-      const updatedGame = await this.getGameById(gameId);
+      // Return the updated game with players (post-commit read on the pool)
+      const updatedGame = await this.getGameById(gameId, userId);
       return updatedGame;
     } catch (error) {
       // Rollback on error
       await pgClient.query('ROLLBACK');
       logger.error({ err: error }, 'Error updating game');
       throw error;
+    } finally {
+      client.release();
     }
   }
 
-  async getGameById(gameId: string) {
+  async getGameById(gameId: string, userId: string) {
     try {
       const query = `
-        SELECT g.*, 
+        SELECT g.*,
                json_agg(DISTINCT p.*) as players,
                json_agg(DISTINCT t.*) as teams
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
-        WHERE g.id = $1
+        WHERE g.id = $1 AND g."userId" = $2
         GROUP BY g.id
       `;
-      
-      const result = await pgClient.query(query, [gameId]);
+
+      const result = await pgClient.query(query, [gameId, userId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');

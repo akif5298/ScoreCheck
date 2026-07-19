@@ -1,6 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { AppShell, Card, Metric, Badge } from "@/components/app-shell";
-import { adminStats, recentGames } from "@/lib/mock-data";
+import { useAuth } from "@/contexts/auth-context";
+import { api } from "@/lib/api";
 
 export const Route = createFileRoute("/admin")({
   head: () => ({
@@ -8,122 +12,271 @@ export const Route = createFileRoute("/admin")({
       { title: "Admin — ScoreCheck" },
       {
         name: "description",
-        content: "Master account access for managing users, games, and the OCR review queue.",
+        content: "Manage users and games across the whole instance.",
       },
     ],
   }),
   component: Admin,
 });
 
-const users = [
-  { id: "u1", handle: "marcus", role: "admin", games: 42, lastActive: "2h ago" },
-  { id: "u2", handle: "jess", role: "user", games: 38, lastActive: "1d ago" },
-  { id: "u3", handle: "kev", role: "user", games: 29, lastActive: "3d ago" },
-  { id: "u4", handle: "ari", role: "user", games: 22, lastActive: "5d ago" },
-  { id: "u5", handle: "ty", role: "user", games: 16, lastActive: "1w ago" },
-];
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
+interface AdminUser {
+  id: string;
+  email: string;
+  name: string | null;
+  role: "USER" | "ADMIN";
+  createdAt: string;
+  _count: { games: number };
+}
+
+interface AdminGameUser {
+  id: string;
+  email: string;
+  name: string | null;
+}
+
+interface AdminDashboard {
+  totalUsers: number;
+  totalGames: number;
+  totalPlayers: number;
+  recentGames: Array<{
+    id: string;
+    homeTeam: string;
+    awayTeam: string;
+    homeScore: number;
+    awayScore: number;
+    createdAt: string;
+    user: AdminGameUser;
+  }>;
+  topUsers: Array<{
+    id: string;
+    email: string;
+    name: string | null;
+    _count: { games: number };
+  }>;
+}
 
 function Admin() {
-  const review = recentGames.filter((g) => g.status !== "verified").slice(0, 3);
+  const { user, loading } = useAuth();
+
+  if (!loading && user && user.role !== "ADMIN") {
+    return (
+      <AppShell eyebrow="Admin" title="Admin" description="Restricted area.">
+        <Card title="Not authorized" hint="Admins only">
+          <p className="text-sm text-muted-foreground">
+            Your account doesn't have admin access. If you think it should, ask the instance owner.
+          </p>
+        </Card>
+      </AppShell>
+    );
+  }
+
+  return <AdminDashboardView selfId={user?.id ?? ""} />;
+}
+
+function AdminDashboardView({ selfId }: { selfId: string }) {
+  const qc = useQueryClient();
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<string | null>(null);
+  const [confirmDeleteGame, setConfirmDeleteGame] = useState<string | null>(null);
+
+  const { data: dashboard, isLoading: dashboardLoading } = useQuery({
+    queryKey: ["admin", "dashboard"],
+    queryFn: () => api.get<ApiResponse<AdminDashboard>>("/api/admin/dashboard").then((r) => r.data),
+  });
+
+  const { data: users = [], isLoading: usersLoading } = useQuery({
+    queryKey: ["admin", "users"],
+    queryFn: () => api.get<ApiResponse<AdminUser[]>>("/api/admin/users").then((r) => r.data),
+  });
+
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["admin"] });
+  };
+
+  const roleMutation = useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: "USER" | "ADMIN" }) =>
+      api.patch<ApiResponse<AdminUser>>(`/api/admin/users/${userId}/role`, { role }),
+    onSuccess: (res) => {
+      invalidate();
+      toast.success(
+        `${res.data.email} is now ${res.data.role === "ADMIN" ? "an admin" : "a member"}`,
+      );
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const deleteUserMutation = useMutation({
+    mutationFn: (userId: string) => api.del(`/api/admin/users/${userId}`),
+    onSuccess: () => {
+      invalidate();
+      toast.success("User deleted");
+      setConfirmDeleteUser(null);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const deleteGameMutation = useMutation({
+    mutationFn: (gameId: string) => api.del(`/api/admin/games/${gameId}`),
+    onSuccess: () => {
+      invalidate();
+      toast.success("Game deleted");
+      setConfirmDeleteGame(null);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
 
   return (
     <AppShell
-      eyebrow="Master account"
+      eyebrow="Instance owner"
       title="Admin"
-      description="Manage users, work the review queue, and monitor OCR pipeline health."
+      description="Manage users and games across the whole instance."
     >
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Metric label="Users" value={adminStats.totalUsers} hint="3 active this week" />
-        <Metric label="Games" value={adminStats.totalGames} delta={{ value: "+8 wk" }} />
+      <section className="grid gap-4 sm:grid-cols-3">
+        <Metric label="Users" value={dashboardLoading ? "…" : (dashboard?.totalUsers ?? 0)} />
+        <Metric label="Games" value={dashboardLoading ? "…" : (dashboard?.totalGames ?? 0)} />
         <Metric
-          label="Screenshots"
-          value={adminStats.totalScreenshots}
-          delta={{ value: "+11 wk" }}
-        />
-        <Metric
-          label="Review queue"
-          value={adminStats.pendingReview}
-          delta={{ value: "needs eyes", positive: false }}
+          label="Player rows"
+          value={dashboardLoading ? "…" : (dashboard?.totalPlayers ?? 0)}
         />
       </section>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-        <Card title="Users" hint="League members" padding="none">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border-strong bg-secondary/40 text-left">
-                <th className="stamp px-6 py-3 font-normal">Handle</th>
-                <th className="stamp pr-3 font-normal">Role</th>
-                <th className="stamp px-2 text-right font-normal">Games</th>
-                <th className="stamp px-6 text-right font-normal">Last active</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-secondary/40">
-                  <td className="px-6 py-3.5 font-medium">@{u.handle}</td>
-                  <td className="pr-3">
-                    {u.role === "admin" ? (
-                      <Badge tone="primary">Admin</Badge>
-                    ) : (
-                      <Badge tone="outline">User</Badge>
-                    )}
-                  </td>
-                  <td className="px-2 text-right font-mono tabular-nums">{u.games}</td>
-                  <td className="px-6 text-right text-xs text-muted-foreground">{u.lastActive}</td>
+        <Card title="Users" hint="Everyone with an account" padding="none">
+          {usersLoading ? (
+            <div className="p-6 text-sm text-muted-foreground">Loading…</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border-strong bg-secondary/40 text-left">
+                  <th className="stamp px-6 py-3 font-normal">User</th>
+                  <th className="stamp pr-3 font-normal">Role</th>
+                  <th className="stamp px-2 text-right font-normal">Games</th>
+                  <th className="stamp px-6 text-right font-normal">Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {users.map((u) => {
+                  const isSelf = u.id === selfId;
+                  return (
+                    <tr key={u.id} className="hover:bg-secondary/40">
+                      <td className="px-6 py-3.5">
+                        <div className="font-medium">{u.name ?? "—"}</div>
+                        <div className="text-xs text-muted-foreground">{u.email}</div>
+                      </td>
+                      <td className="pr-3">
+                        {u.role === "ADMIN" ? (
+                          <Badge tone="primary">Admin</Badge>
+                        ) : (
+                          <Badge tone="outline">Member</Badge>
+                        )}
+                      </td>
+                      <td className="px-2 text-right font-mono tabular-nums">{u._count.games}</td>
+                      <td className="px-6 py-3.5 text-right">
+                        {isSelf ? (
+                          <span className="text-xs text-muted-foreground">you</span>
+                        ) : confirmDeleteUser === u.id ? (
+                          <span className="inline-flex gap-2">
+                            <button
+                              onClick={() => deleteUserMutation.mutate(u.id)}
+                              disabled={deleteUserMutation.isPending}
+                              className="rounded-md bg-destructive px-2.5 py-1 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteUser(null)}
+                              className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-secondary"
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <span className="inline-flex gap-2">
+                            <button
+                              onClick={() =>
+                                roleMutation.mutate({
+                                  userId: u.id,
+                                  role: u.role === "ADMIN" ? "USER" : "ADMIN",
+                                })
+                              }
+                              disabled={roleMutation.isPending}
+                              className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-secondary disabled:opacity-50"
+                            >
+                              {u.role === "ADMIN" ? "Demote" : "Make admin"}
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteUser(u.id)}
+                              className="rounded-md border border-destructive/40 px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
+                            >
+                              Delete
+                            </button>
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </Card>
 
-        <Card title="Review queue" hint="Low-confidence uploads">
-          {review.length === 0 ? (
+        <Card title="Recent games" hint="Latest uploads, any user">
+          {dashboardLoading ? (
+            <div className="text-sm text-muted-foreground">Loading…</div>
+          ) : !dashboard || dashboard.recentGames.length === 0 ? (
             <div className="rounded-md border border-dashed border-border bg-background p-6 text-center text-sm text-muted-foreground">
-              Nothing to review.
+              No games yet.
             </div>
           ) : (
             <ul className="space-y-3">
-              {review.map((g) => (
+              {dashboard.recentGames.map((g) => (
                 <li key={g.id} className="rounded-md border border-border bg-background p-4">
                   <div className="flex items-center justify-between">
                     <span className="font-display text-sm font-semibold">
-                      {g.away.abbr} @ {g.home.abbr}
+                      {g.awayTeam} {g.awayScore} @ {g.homeTeam} {g.homeScore}
                     </span>
-                    <Badge tone="warning">{g.ocrConfidence}%</Badge>
+                    {confirmDeleteGame === g.id ? (
+                      <span className="inline-flex gap-2">
+                        <button
+                          onClick={() => deleteGameMutation.mutate(g.id)}
+                          disabled={deleteGameMutation.isPending}
+                          className="rounded-md bg-destructive px-2.5 py-1 text-xs font-medium text-destructive-foreground hover:opacity-90 disabled:opacity-50"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteGame(null)}
+                          className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-secondary"
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmDeleteGame(g.id)}
+                        className="rounded-md border border-destructive/40 px-2.5 py-1 text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                   <div className="stamp mt-1">
-                    @{g.uploadedBy} · {g.date}
-                  </div>
-                  <div className="mt-3 flex gap-2">
-                    <button className="flex-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90">
-                      Approve
-                    </button>
-                    <button className="flex-1 rounded-md border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-secondary">
-                      Inspect
-                    </button>
+                    {g.user.name ?? g.user.email} ·{" "}
+                    {new Date(g.createdAt).toLocaleDateString(undefined, {
+                      month: "short",
+                      day: "numeric",
+                    })}
                   </div>
                 </li>
               ))}
             </ul>
           )}
-        </Card>
-
-        <Card title="Pipeline health" hint="Last 24 hours" className="lg:col-span-2" padding="none">
-          <div className="grid gap-px overflow-hidden bg-border sm:grid-cols-4">
-            {[
-              { l: "Junk filter", v: "1.4 s", s: "warm" },
-              { l: "GCV extract", v: "11.8 s", s: "nominal" },
-              { l: "Qwen2.5-VL", v: "19.6 s", s: "standby" },
-              { l: "Eval accuracy", v: "98.6%", s: "labeled set" },
-            ].map((m) => (
-              <div key={m.l} className="bg-card p-5">
-                <div className="stamp">{m.l}</div>
-                <div className="mt-2 font-display text-2xl font-semibold tabular-nums">{m.v}</div>
-                <div className="text-[11px] text-muted-foreground">{m.s}</div>
-              </div>
-            ))}
-          </div>
         </Card>
       </div>
     </AppShell>

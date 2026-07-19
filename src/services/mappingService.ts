@@ -22,6 +22,24 @@ export async function getMappingsForUser(userId: string): Promise<Map<string, st
   return map;
 }
 
+/**
+ * The set of display names a user tracks totals/analytics for — exactly the
+ * display names of their gamertag mappings. Replaces the old hardcoded
+ * ALLOWED_PLAYER_NAMES list: a player only accrues totals once the user maps
+ * a gamertag to them on the roster page.
+ */
+export async function getAllowedNamesForUser(userId: string): Promise<Set<string>> {
+  const result = await pgClient.query<{ displayName: string }>(
+    `SELECT DISTINCT "displayName" FROM player_mappings WHERE "userId" = $1`,
+    [userId],
+  );
+  return new Set(result.rows.map((r) => r.displayName));
+}
+
+export async function getAllowedNamesArray(userId: string): Promise<string[]> {
+  return Array.from(await getAllowedNamesForUser(userId));
+}
+
 export async function listMappingsForUser(userId: string): Promise<PlayerMapping[]> {
   const result = await pgClient.query<PlayerMapping>(
     `SELECT id, "userId", gamertag, "displayName", "createdAt", "updatedAt"

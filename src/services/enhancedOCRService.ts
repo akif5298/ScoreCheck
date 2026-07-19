@@ -109,11 +109,10 @@ export class EnhancedOCRService {
     return { teamAName: 'Team A', teamBName: 'Team B' };
   }
 
-  static generateCustomTeamNamesAfterAssignment(players: Player[]): { teamAName: string; teamBName: string } {
-    const customNames = [
-      'Akif', 'Abdul', 'Anis', 'Ankit', 'Nillan', 'Ikroop', 'TV', 'Kashif', 'Dylan',
-    ];
-
+  static generateCustomTeamNamesAfterAssignment(
+    players: Player[],
+    customNames: string[],
+  ): { teamAName: string; teamBName: string } {
     const teamAPlayers = players.filter(p => p.team === 'Team A');
     const teamBPlayers = players.filter(p => p.team === 'Team B');
 

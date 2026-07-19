@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import appleAuthService from '@/services/appleAuth';
+import authService from '@/services/authService';
 import { JwtPayload } from '@/types';
 import logger from '@/utils/logger';
 
@@ -25,7 +25,7 @@ export const authenticateToken = async (
       return;
     }
 
-    const payload = appleAuthService.verifyToken(token);
+    const payload = authService.verifyToken(token);
     req.user = payload;
     next();
   } catch (error) {
@@ -44,7 +44,7 @@ export const optionalAuth = async (
     const token = authHeader && authHeader.split(' ')[1];
 
     if (token) {
-      const payload = appleAuthService.verifyToken(token);
+      const payload = authService.verifyToken(token);
       req.user = payload;
     }
 

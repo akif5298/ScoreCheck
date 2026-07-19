@@ -1,21 +1,9 @@
 # Node 22 to match CI and Vite/TanStack Start requirements
 FROM node:22
 
-# Native-module build deps (canvas needs cairo/pango; Prisma needs OpenSSL)
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    g++ \
-    pkg-config \
-    libcairo2-dev \
-    libpango1.0-dev \
-    libjpeg-dev \
-    libgif-dev \
-    librsvg2-dev \
-    libpixman-1-dev \
-    libpng-dev \
-    openssl \
-    && rm -rf /var/lib/apt/lists/*
+# Prisma needs OpenSSL at runtime. sharp (the only native dep) ships prebuilt
+# libvips binaries for linux x64, so no C/C++ toolchain or graphics libs needed.
+RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

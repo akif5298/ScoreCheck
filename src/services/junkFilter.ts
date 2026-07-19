@@ -9,6 +9,7 @@
  */
 
 import { OLLAMA_BASE_URL, OLLAMA_JUNK_FILTER_MODEL } from '@/constants';
+import { ollamaHeaders } from '@/services/ollamaExtractor';
 
 const MODEL = OLLAMA_JUNK_FILTER_MODEL;
 const TIMEOUT_MS = 15_000;
@@ -34,7 +35,7 @@ export async function classifyScreenshot(imageBuffer: Buffer): Promise<JunkFilte
 
     response = await fetch(`${OLLAMA_BASE_URL}/api/generate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: ollamaHeaders(),
       body: JSON.stringify({
         model: MODEL,
         prompt: PROMPT,

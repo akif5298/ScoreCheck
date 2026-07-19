@@ -1,101 +1,150 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import appleAuthService from '@/services/appleAuth';
-import { AppleAuthRequest, ApiResponse } from '@/types';
+import rateLimit from 'express-rate-limit';
+import authService, { AuthError, toPublicUser } from '@/services/authService';
+import { authenticateToken } from '@/middleware/auth';
+import { ApiResponse } from '@/types';
 import logger from '@/utils/logger';
 
 const router = Router();
 
-const appleAuthSchema = z.object({
-  identityToken: z.string(),
-  authorizationCode: z.string(),
-  user: z.object({
-    name: z.object({
-      firstName: z.string().optional(),
-      lastName: z.string().optional(),
-    }).optional(),
-    email: z.string().email().optional(),
-  }).optional(),
+// Stricter limiter for credential endpoints (global /api limiter still applies)
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '10'),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Too many attempts. Please try again later.' },
 });
 
-router.post('/apple', async (req: Request, res: Response) => {
-  try {
-    const validatedData = appleAuthSchema.parse(req.body);
-    
-    const result = await appleAuthService.authenticateUser(validatedData as AppleAuthRequest);
-    
-    const response: ApiResponse<{ user: any; token: string }> = {
-      success: true,
-      data: {
-        user: {
-          id: result.user.id,
-          email: result.user.email,
-          name: result.user.name,
-          createdAt: result.user.createdAt,
-        },
-        token: result.token,
-      },
-      message: 'Authentication successful',
-    };
+const emailSchema = z
+  .string()
+  .trim()
+  .max(254)
+  .email('Invalid email address')
+  .transform((s) => s.toLowerCase());
 
+// 72 bytes is bcrypt's input limit
+const passwordSchema = z
+  .string()
+  .min(8, 'Password must be at least 8 characters')
+  .max(72, 'Password must be at most 72 characters');
+
+const signupSchema = z.object({
+  email: emailSchema,
+  password: passwordSchema,
+  name: z.string().trim().min(1).max(100).optional(),
+  inviteCode: z.string().min(1, 'Invite code is required'),
+});
+
+const loginSchema = z.object({
+  email: emailSchema,
+  password: z.string().min(1, 'Password is required'),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: passwordSchema,
+});
+
+function handleAuthError(res: Response, error: unknown, context: string): Response {
+  if (error instanceof z.ZodError) {
+    return res.status(400).json({
+      success: false,
+      error: error.errors[0]?.message ?? 'Invalid request',
+    } satisfies ApiResponse);
+  }
+  if (error instanceof AuthError) {
+    return res.status(error.status).json({
+      success: false,
+      error: error.message,
+    } satisfies ApiResponse);
+  }
+  logger.error({ err: error }, context);
+  return res.status(500).json({
+    success: false,
+    error: 'Something went wrong. Please try again.',
+  } satisfies ApiResponse);
+}
+
+router.post('/signup', authRateLimit, async (req: Request, res: Response) => {
+  try {
+    const input = signupSchema.parse(req.body);
+    const result = await authService.signup(input);
+
+    const response: ApiResponse<typeof result> = {
+      success: true,
+      data: result,
+      message: 'Account created',
+    };
+    return res.status(201).json(response);
+  } catch (error) {
+    return handleAuthError(res, error, 'Signup error');
+  }
+});
+
+router.post('/login', authRateLimit, async (req: Request, res: Response) => {
+  try {
+    const input = loginSchema.parse(req.body);
+    const result = await authService.login(input.email, input.password);
+
+    const response: ApiResponse<typeof result> = {
+      success: true,
+      data: result,
+      message: 'Login successful',
+    };
     return res.status(200).json(response);
   } catch (error) {
-    logger.error({ err: error }, 'Apple authentication error');
-    
-    const response: ApiResponse = {
-      success: false,
-      error: error instanceof Error ? error.message : 'Authentication failed',
-    };
+    return handleAuthError(res, error, 'Login error');
+  }
+});
 
-    return res.status(400).json(response);
+router.post('/change-password', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const input = changePasswordSchema.parse(req.body);
+    await authService.changePassword(req.user!.userId, input.currentPassword, input.newPassword);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Password updated',
+    } satisfies ApiResponse);
+  } catch (error) {
+    return handleAuthError(res, error, 'Change password error');
   }
 });
 
 router.post('/verify', async (req: Request, res: Response) => {
   try {
     const { token } = req.body;
-    
+
     if (!token) {
-      const response: ApiResponse = {
+      return res.status(400).json({
         success: false,
         error: 'Token is required',
-      };
-      return res.status(400).json(response);
+      } satisfies ApiResponse);
     }
 
-    const user = await appleAuthService.getUserFromToken(token);
-    
+    const user = await authService.getUserFromToken(token);
+
     if (!user) {
-      const response: ApiResponse = {
+      return res.status(401).json({
         success: false,
         error: 'Invalid token',
-      };
-      return res.status(401).json(response);
+      } satisfies ApiResponse);
     }
 
-    const response: ApiResponse<{ user: any }> = {
+    const response: ApiResponse<{ user: ReturnType<typeof toPublicUser> }> = {
       success: true,
-      data: {
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          createdAt: user.createdAt,
-        },
-      },
+      data: { user: toPublicUser(user) },
       message: 'Token is valid',
     };
-
     return res.status(200).json(response);
   } catch (error) {
     logger.error({ err: error }, 'Token verification error');
-    
-    const response: ApiResponse = {
+    return res.status(401).json({
       success: false,
       error: 'Token verification failed',
-    };
-
-    return res.status(401).json(response);
+    } satisfies ApiResponse);
   }
 });
 

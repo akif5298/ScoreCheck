@@ -13,7 +13,7 @@ export function getToken(): string | null {
 
 export function getStoredUser(): AuthUser | null {
   if (typeof localStorage === "undefined") return null;
-  const raw = localStorage.getItem("demoUser");
+  const raw = localStorage.getItem("user");
   if (!raw) return null;
   try {
     return JSON.parse(raw) as AuthUser;
@@ -24,11 +24,13 @@ export function getStoredUser(): AuthUser | null {
 
 export function setSession(token: string, user: AuthUser): void {
   localStorage.setItem("token", token);
-  localStorage.setItem("demoUser", JSON.stringify(user));
+  localStorage.setItem("user", JSON.stringify(user));
 }
 
 export function clearSession(): void {
   localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  // legacy key from the demo-auth era
   localStorage.removeItem("demoUser");
 }
 

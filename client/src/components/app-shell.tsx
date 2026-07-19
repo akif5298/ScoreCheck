@@ -58,52 +58,38 @@ export function AppShell({
         <nav className="flex-1 overflow-y-auto p-3">
           <div className="stamp px-3 pb-2 pt-3">Workspace</div>
           <ul className="space-y-0.5">
-            {nav.map((n) => {
-              const active =
-                n.to === "/"
-                  ? pathname === "/"
-                  : pathname === n.to || pathname.startsWith(`${n.to}/`);
-              return (
-                <li key={n.to}>
-                  <Link
-                    to={n.to}
-                    className={`group flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${
-                      active
-                        ? "bg-primary text-primary-foreground"
-                        : "text-foreground/70 hover:bg-secondary hover:text-foreground"
-                    }`}
-                  >
-                    <span className="flex items-center gap-3">
-                      <span
-                        className={`font-mono text-[10px] tracking-widest ${
-                          active ? "text-primary-foreground/60" : "text-muted-foreground"
-                        }`}
-                      >
-                        {n.code}
+            {nav
+              .filter((n) => n.to !== "/admin" || user?.role === "ADMIN")
+              .map((n) => {
+                const active =
+                  n.to === "/"
+                    ? pathname === "/"
+                    : pathname === n.to || pathname.startsWith(`${n.to}/`);
+                return (
+                  <li key={n.to}>
+                    <Link
+                      to={n.to}
+                      className={`group flex items-center justify-between rounded-md px-3 py-2 text-sm transition-colors ${
+                        active
+                          ? "bg-primary text-primary-foreground"
+                          : "text-foreground/70 hover:bg-secondary hover:text-foreground"
+                      }`}
+                    >
+                      <span className="flex items-center gap-3">
+                        <span
+                          className={`font-mono text-[10px] tracking-widest ${
+                            active ? "text-primary-foreground/60" : "text-muted-foreground"
+                          }`}
+                        >
+                          {n.code}
+                        </span>
+                        <span className="font-medium">{n.label}</span>
                       </span>
-                      <span className="font-medium">{n.label}</span>
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
+                    </Link>
+                  </li>
+                );
+              })}
           </ul>
-
-          <div className="stamp px-3 pb-2 pt-6">Pipeline</div>
-          <div className="rounded-md border border-border bg-background p-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium">Status</span>
-              <span className="flex items-center gap-1.5 text-xs">
-                <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                <span className="text-muted-foreground">Online</span>
-              </span>
-            </div>
-            <div className="mt-3 space-y-1.5">
-              <Row k="GCV avg" v="11.8s" />
-              <Row k="Junk filter" v="1.4s" />
-              <Row k="Accuracy" v="98.6%" />
-            </div>
-          </div>
         </nav>
 
         <div className="border-t border-border p-3">
@@ -188,15 +174,6 @@ export function AppShell({
           </div>
         </footer>
       </div>
-    </div>
-  );
-}
-
-function Row({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-center justify-between text-xs">
-      <span className="text-muted-foreground">{k}</span>
-      <span className="font-mono tabular-nums">{v}</span>
     </div>
   );
 }

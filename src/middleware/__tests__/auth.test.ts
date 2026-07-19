@@ -1,13 +1,13 @@
-jest.mock('@/services/appleAuth', () => ({
+jest.mock('@/services/authService', () => ({
   __esModule: true,
   default: { verifyToken: jest.fn() },
 }));
 
 import { Request, Response, NextFunction } from 'express';
-import appleAuthService from '@/services/appleAuth';
+import authService from '@/services/authService';
 import { authenticateToken, optionalAuth } from '@/middleware/auth';
 
-const mockedVerifyToken = jest.mocked(appleAuthService.verifyToken);
+const mockedVerifyToken = jest.mocked(authService.verifyToken);
 
 function mockReq(authHeader?: string): Request {
   return { headers: { authorization: authHeader } } as unknown as Request;

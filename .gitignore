@@ -209,3 +209,6 @@ graphify-out/
 
 # R history
 .Rhistory
+
+# Claude Instruction Manual
+CLAUDE.md

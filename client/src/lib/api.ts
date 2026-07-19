@@ -15,6 +15,18 @@ async function apiFetch<T = unknown>(path: string, init: RequestInit = {}): Prom
   );
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
+    // Expired/invalid session on a non-auth route: clear it and send the user
+    // to login. Auth routes handle their own 401s (wrong password etc.).
+    if (
+      res.status === 401 &&
+      !path.startsWith("/api/auth/") &&
+      typeof window !== "undefined" &&
+      !window.location.pathname.startsWith("/login")
+    ) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+      window.location.assign("/login");
+    }
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw Object.assign(new Error((body as Record<string, string>).error ?? "Request failed"), {
       status: res.status,
@@ -32,5 +44,7 @@ export const api = {
     }),
   put: <T = unknown>(path: string, body?: unknown) =>
     apiFetch<T>(path, { method: "PUT", body: JSON.stringify(body) }),
+  patch: <T = unknown>(path: string, body?: unknown) =>
+    apiFetch<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   del: <T = unknown>(path: string) => apiFetch<T>(path, { method: "DELETE" }),
 };

@@ -27,6 +27,9 @@ jest.mock('@/services/squadService', () => ({
     isPersonal: true,
     createdByUserId: 'user-1',
   }),
+  // Signup accepts a squad invite token as an alternative to the global INVITE_CODE.
+  // Default: the code is not a squad invite, so only the global code opens the gate.
+  getInvitePreview: jest.fn().mockResolvedValue(null),
 }));
 
 import request from 'supertest';
@@ -113,6 +116,47 @@ describe('POST /signup', () => {
 
     expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
+    expect(mocked.createLocalUser).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid squad invite token in place of the global invite code', async () => {
+    // Being invited to a squad is sufficient authorization: the join page passes the
+    // invite token as the inviteCode, and signup must let it through even though it does
+    // not match INVITE_CODE.
+    const { getInvitePreview } = jest.requireMock('@/services/squadService');
+    getInvitePreview.mockResolvedValue({ squadId: 's1', squadName: 'Tuesday Run' });
+    mocked.findUserByEmail.mockResolvedValue(null);
+    mocked.createLocalUser.mockResolvedValue({ ...mockUser, email: 'new@example.com' });
+
+    const res = await request(app)
+      .post('/signup')
+      .send({ ...validBody, inviteCode: 'a-squad-invite-token' });
+
+    expect(res.status).toBe(201);
+    expect(getInvitePreview).toHaveBeenCalledWith('a-squad-invite-token');
+    expect(mocked.createLocalUser).toHaveBeenCalled();
+  });
+
+  it('does not consume the squad invite during signup (the join step does)', async () => {
+    // acceptInvite is never called here — the client joins as a separate step, so a
+    // maxUses:1 link is not spent just by creating the account.
+    const squadSvc = jest.requireMock('@/services/squadService');
+    squadSvc.getInvitePreview.mockResolvedValue({ squadId: 's1', squadName: 'Tuesday Run' });
+    mocked.findUserByEmail.mockResolvedValue(null);
+    mocked.createLocalUser.mockResolvedValue({ ...mockUser, email: 'new@example.com' });
+
+    await request(app).post('/signup').send({ ...validBody, inviteCode: 'a-squad-invite-token' });
+
+    expect(squadSvc.acceptInvite).toBeUndefined();
+  });
+
+  it('rejects a code that is neither the global code nor a squad invite', async () => {
+    const { getInvitePreview } = jest.requireMock('@/services/squadService');
+    getInvitePreview.mockResolvedValue(null);
+
+    const res = await request(app).post('/signup').send({ ...validBody, inviteCode: 'nope' });
+
+    expect(res.status).toBe(403);
     expect(mocked.createLocalUser).not.toHaveBeenCalled();
   });
 

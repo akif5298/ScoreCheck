@@ -2,7 +2,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import supabaseService, { pgPool } from './supabase';
-import { createPersonalSquad } from './squadService';
+import { createPersonalSquad, getInvitePreview } from './squadService';
 import { User, JwtPayload } from '@/types';
 import logger from '@/utils/logger';
 
@@ -84,11 +84,24 @@ export class AuthService {
   }
 
   async signup(input: SignupInput): Promise<{ user: PublicUser; token: string }> {
-    if (!process.env.INVITE_CODE) {
-      throw new AuthError(503, 'Signups are currently disabled');
-    }
-    if (!inviteCodeMatches(input.inviteCode)) {
-      throw new AuthError(403, 'Invalid invite code');
+    // Two ways to be authorized to create an account: the global INVITE_CODE, or a valid
+    // squad invite token. Being invited to a squad is itself sufficient authorization — it
+    // was minted by an existing owner — so it also overrides the "signups disabled" state
+    // that an unset INVITE_CODE would otherwise impose. The squad invite is NOT consumed
+    // here; the client joins as a separate step after the account exists (see the join
+    // flow), which keeps this transaction free of squad logic and reuses acceptInvite's
+    // atomic check-and-consume unchanged.
+    const globalGateOpen = !!process.env.INVITE_CODE && inviteCodeMatches(input.inviteCode);
+    if (!globalGateOpen) {
+      const squadInvite = await getInvitePreview(input.inviteCode);
+      if (!squadInvite) {
+        // Distinguish "signups are off" from "your code is wrong" only when there is no
+        // squad-invite path either — an invalid code with a set INVITE_CODE is a 403.
+        if (!process.env.INVITE_CODE) {
+          throw new AuthError(503, 'Signups are currently disabled');
+        }
+        throw new AuthError(403, 'Invalid invite code');
+      }
     }
 
     const existing = await supabaseService.findUserByEmail(input.email);

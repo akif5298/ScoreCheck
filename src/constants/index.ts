@@ -23,6 +23,15 @@ export const JUNK_FILTER_TIMEOUT_MS = 15_000;
 // (~22s warm) but far below a worker-pinning 10 minutes. Env-overridable.
 export const EXTRACTION_TIMEOUT_MS = parseInt(process.env.EXTRACTION_TIMEOUT_MS || '120000', 10);
 
+// Timeout for the /api/tags liveness pre-flight before each upload. 3s suits a
+// warm local Ollama, but a scale-to-zero serverless host (Modal) needs the first
+// request to WAIT through a cold start — set this to ~120000 there so the wake is
+// absorbed by the pre-flight instead of failing it into a spurious 503.
+export const EXTRACTION_PREFLIGHT_TIMEOUT_MS = parseInt(
+  process.env.EXTRACTION_PREFLIGHT_TIMEOUT_MS || '3000',
+  10,
+);
+
 // Per-user screenshots processed per rolling day (bounds inference cost/abuse).
 export const EXTRACTION_DAILY_LIMIT = parseInt(process.env.EXTRACTION_DAILY_LIMIT || '50', 10);
 

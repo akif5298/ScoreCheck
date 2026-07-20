@@ -13,7 +13,13 @@
  */
 
 import sharp from 'sharp';
-import { OLLAMA_BASE_URL, OLLAMA_API_KEY, OLLAMA_EXTRACTION_MODEL, EXTRACTION_TIMEOUT_MS } from '@/constants';
+import {
+  OLLAMA_BASE_URL,
+  OLLAMA_API_KEY,
+  OLLAMA_EXTRACTION_MODEL,
+  EXTRACTION_TIMEOUT_MS,
+  EXTRACTION_PREFLIGHT_TIMEOUT_MS,
+} from '@/constants';
 import { ExtractionUnavailableError } from '@/errors';
 
 export const DEFAULT_MODEL = OLLAMA_EXTRACTION_MODEL;
@@ -35,7 +41,7 @@ export async function assertExtractionHostReachable(): Promise<void> {
     const res = await fetch(`${OLLAMA_BASE_URL}/api/tags`, {
       method: 'GET',
       headers: ollamaHeaders(),
-      signal: AbortSignal.timeout(3_000),
+      signal: AbortSignal.timeout(EXTRACTION_PREFLIGHT_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
   } catch (err) {

@@ -10,6 +10,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { AuthProvider } from "@/contexts/auth-context";
+import { SquadProvider } from "@/contexts/squad-context";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -130,8 +131,10 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <Outlet />
-        <Toaster position="bottom-right" richColors />
+        <SquadProvider>
+          <Outlet />
+          <Toaster position="bottom-right" richColors />
+        </SquadProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

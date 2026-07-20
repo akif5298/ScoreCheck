@@ -30,6 +30,10 @@ export function setSession(token: string, user: AuthUser): void {
 export function clearSession(): void {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
+  // Must clear the active-squad scope too: leaving it set would make the next user to log
+  // in on this browser send the previous user's squad as X-Squad-Id, which the server
+  // rejects as a non-member (404) until the squad list reloads and re-seeds it.
+  localStorage.removeItem("activeSquadId");
   // legacy key from the demo-auth era
   localStorage.removeItem("demoUser");
 }

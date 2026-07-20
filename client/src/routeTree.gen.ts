@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UploadRouteImport } from './routes/upload'
 import { Route as TeamsRouteImport } from './routes/teams'
+import { Route as SquadRouteImport } from './routes/squad'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RosterRouteImport } from './routes/roster'
 import { Route as PlayersRouteImport } from './routes/players'
@@ -21,6 +22,7 @@ import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as GamesIndexRouteImport } from './routes/games.index'
+import { Route as JoinTokenRouteImport } from './routes/join.$token'
 import { Route as GamesGameIdRouteImport } from './routes/games.$gameId'
 
 const UploadRoute = UploadRouteImport.update({
@@ -31,6 +33,11 @@ const UploadRoute = UploadRouteImport.update({
 const TeamsRoute = TeamsRouteImport.update({
   id: '/teams',
   path: '/teams',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SquadRoute = SquadRouteImport.update({
+  id: '/squad',
+  path: '/squad',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -83,6 +90,11 @@ const GamesIndexRoute = GamesIndexRouteImport.update({
   path: '/',
   getParentRoute: () => GamesRoute,
 } as any)
+const JoinTokenRoute = JoinTokenRouteImport.update({
+  id: '/join/$token',
+  path: '/join/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GamesGameIdRoute = GamesGameIdRouteImport.update({
   id: '/$gameId',
   path: '/$gameId',
@@ -99,9 +111,11 @@ export interface FileRoutesByFullPath {
   '/players': typeof PlayersRoute
   '/roster': typeof RosterRoute
   '/settings': typeof SettingsRoute
+  '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
   '/upload': typeof UploadRoute
   '/games/$gameId': typeof GamesGameIdRoute
+  '/join/$token': typeof JoinTokenRoute
   '/games/': typeof GamesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -113,9 +127,11 @@ export interface FileRoutesByTo {
   '/players': typeof PlayersRoute
   '/roster': typeof RosterRoute
   '/settings': typeof SettingsRoute
+  '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
   '/upload': typeof UploadRoute
   '/games/$gameId': typeof GamesGameIdRoute
+  '/join/$token': typeof JoinTokenRoute
   '/games': typeof GamesIndexRoute
 }
 export interface FileRoutesById {
@@ -129,9 +145,11 @@ export interface FileRoutesById {
   '/players': typeof PlayersRoute
   '/roster': typeof RosterRoute
   '/settings': typeof SettingsRoute
+  '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
   '/upload': typeof UploadRoute
   '/games/$gameId': typeof GamesGameIdRoute
+  '/join/$token': typeof JoinTokenRoute
   '/games/': typeof GamesIndexRoute
 }
 export interface FileRouteTypes {
@@ -146,9 +164,11 @@ export interface FileRouteTypes {
     | '/players'
     | '/roster'
     | '/settings'
+    | '/squad'
     | '/teams'
     | '/upload'
     | '/games/$gameId'
+    | '/join/$token'
     | '/games/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -160,9 +180,11 @@ export interface FileRouteTypes {
     | '/players'
     | '/roster'
     | '/settings'
+    | '/squad'
     | '/teams'
     | '/upload'
     | '/games/$gameId'
+    | '/join/$token'
     | '/games'
   id:
     | '__root__'
@@ -175,9 +197,11 @@ export interface FileRouteTypes {
     | '/players'
     | '/roster'
     | '/settings'
+    | '/squad'
     | '/teams'
     | '/upload'
     | '/games/$gameId'
+    | '/join/$token'
     | '/games/'
   fileRoutesById: FileRoutesById
 }
@@ -191,8 +215,10 @@ export interface RootRouteChildren {
   PlayersRoute: typeof PlayersRoute
   RosterRoute: typeof RosterRoute
   SettingsRoute: typeof SettingsRoute
+  SquadRoute: typeof SquadRoute
   TeamsRoute: typeof TeamsRoute
   UploadRoute: typeof UploadRoute
+  JoinTokenRoute: typeof JoinTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -209,6 +235,13 @@ declare module '@tanstack/react-router' {
       path: '/teams'
       fullPath: '/teams'
       preLoaderRoute: typeof TeamsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/squad': {
+      id: '/squad'
+      path: '/squad'
+      fullPath: '/squad'
+      preLoaderRoute: typeof SquadRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -281,6 +314,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GamesIndexRouteImport
       parentRoute: typeof GamesRoute
     }
+    '/join/$token': {
+      id: '/join/$token'
+      path: '/join/$token'
+      fullPath: '/join/$token'
+      preLoaderRoute: typeof JoinTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/games/$gameId': {
       id: '/games/$gameId'
       path: '/$gameId'
@@ -313,8 +353,10 @@ const rootRouteChildren: RootRouteChildren = {
   PlayersRoute: PlayersRoute,
   RosterRoute: RosterRoute,
   SettingsRoute: SettingsRoute,
+  SquadRoute: SquadRoute,
   TeamsRoute: TeamsRoute,
   UploadRoute: UploadRoute,
+  JoinTokenRoute: JoinTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

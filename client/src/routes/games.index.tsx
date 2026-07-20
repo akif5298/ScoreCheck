@@ -1,8 +1,29 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { AppShell, Card, Badge } from "@/components/app-shell";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
+import { useAuth } from "@/contexts/auth-context";
+import { useSquads } from "@/contexts/squad-context";
 
 export const Route = createFileRoute("/games/")({
   head: () => ({
@@ -17,24 +38,6 @@ export const Route = createFileRoute("/games/")({
   component: GamesPage,
 });
 
-interface PlayerRow {
-  name: string;
-  team: string;
-  points: number;
-  rebounds: number;
-  assists: number;
-  steals: number;
-  blocks: number;
-  turnovers: number;
-  fouls: number;
-  fgMade: number;
-  fgAttempted: number;
-  threeMade: number;
-  threeAttempted: number;
-  ftMade: number;
-  ftAttempted: number;
-}
-
 interface Game {
   id: string;
   date: string;
@@ -42,25 +45,104 @@ interface Game {
   awayTeam: string;
   homeScore: number;
   awayScore: number;
-  players: PlayerRow[];
+  uploadedByUserId: string;
+  players: unknown[] | null;
+}
+
+interface Member {
+  userId: string;
+  name: string | null;
+  email: string;
+}
+
+interface ApiResponse<T> {
+  success: boolean;
+  data: T;
+  error?: string;
+}
+
+interface MoveResult {
+  moved: string[];
+  duplicates: unknown[];
+  renamed: unknown[];
+  unmapped: string[];
 }
 
 function GamesPage() {
-  const [games, setGames] = useState<Game[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { user } = useAuth();
+  const { activeSquad, squads } = useSquads();
+  const qc = useQueryClient();
 
-  useEffect(() => {
-    api
-      .get<{ success: boolean; data: Game[] }>("/api/screenshots/games")
-      .then((res) => {
-        if (res.success) setGames(res.data);
-      })
-      .catch((err: Error) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState<Game | null>(null);
 
-  if (loading) {
+  const isOwner = activeSquad?.role === "OWNER";
+  const moveTargets = squads.filter((s) => s.id !== activeSquad?.id);
+
+  const {
+    data: games = [],
+    isLoading,
+    error,
+  } = useQuery({
+    queryKey: ["games", activeSquad?.id],
+    queryFn: () => api.get<ApiResponse<Game[]>>("/api/screenshots/games").then((r) => r.data),
+  });
+
+  // Attribution names, only meaningful in a shared squad.
+  const { data: members = [] } = useQuery({
+    queryKey: ["squad-members", activeSquad?.id],
+    queryFn: () =>
+      api.get<ApiResponse<Member[]>>(`/api/squads/${activeSquad!.id}/members`).then((r) => r.data),
+    enabled: !!activeSquad && !activeSquad.isPersonal,
+  });
+  const nameFor = (userId: string): string | null => {
+    const m = members.find((mm) => mm.userId === userId);
+    return m ? (m.name ?? m.email) : null;
+  };
+
+  const move = useMutation({
+    mutationFn: ({ targetId, gameIds }: { targetId: string; gameIds: string[] }) =>
+      api.post<ApiResponse<MoveResult>>(`/api/squads/${targetId}/games/move`, { gameIds }),
+    onSuccess: (res) => {
+      const r = res.data;
+      const parts = [`Moved ${r.moved.length} game${r.moved.length === 1 ? "" : "s"}.`];
+      if (r.duplicates.length) parts.push(`${r.duplicates.length} already there.`);
+      if (r.unmapped.length) parts.push(`${r.unmapped.length} name(s) need mapping.`);
+      toast.success(parts.join(" "));
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["games"] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const del = useMutation({
+    mutationFn: (gameId: string) => api.del(`/api/screenshots/games/${gameId}`),
+    onSuccess: () => {
+      toast.success("Game deleted");
+      setConfirmDelete(null);
+      setSelected(new Set());
+      qc.invalidateQueries({ queryKey: ["games"] });
+    },
+    onError: (err: Error) => {
+      toast.error(err.message);
+      setConfirmDelete(null);
+    },
+  });
+
+  const canModify = (g: Game) => isOwner || g.uploadedByUserId === user?.id;
+
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const allSelected = games.length > 0 && selected.size === games.length;
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(games.map((g) => g.id)));
+
+  if (isLoading) {
     return (
       <AppShell eyebrow="History" title="Games" description="All uploaded box scores.">
         <div className="flex h-48 items-center justify-center">
@@ -74,7 +156,7 @@ function GamesPage() {
     return (
       <AppShell eyebrow="History" title="Games" description="All uploaded box scores.">
         <Card>
-          <p className="text-sm text-destructive">{error}</p>
+          <p className="text-sm text-destructive">{(error as Error).message}</p>
         </Card>
       </AppShell>
     );
@@ -86,6 +168,51 @@ function GamesPage() {
       title="Games"
       description="Every uploaded box score in reverse-chronological order."
     >
+      {/* Bulk action bar — appears only with a selection and somewhere to move to. */}
+      {selected.size > 0 && (
+        <div className="mb-4 flex items-center justify-between rounded-md border border-border bg-secondary/40 px-4 py-3">
+          <span className="text-sm font-medium">
+            {selected.size} selected
+            <button
+              onClick={() => setSelected(new Set())}
+              className="ml-3 text-xs text-muted-foreground underline-offset-4 hover:underline"
+            >
+              Clear
+            </button>
+          </span>
+          {moveTargets.length > 0 ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  disabled={move.isPending}
+                  className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                >
+                  {move.isPending ? "Moving…" : "Move to squad"}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                <DropdownMenuLabel className="stamp">Move selected into</DropdownMenuLabel>
+                {moveTargets.map((s) => (
+                  <DropdownMenuItem
+                    key={s.id}
+                    onSelect={() => move.mutate({ targetId: s.id, gameIds: [...selected] })}
+                  >
+                    {s.name}
+                    {s.isPersonal && (
+                      <span className="ml-1 text-[10px] text-muted-foreground">personal</span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Create another squad to move games into it.
+            </span>
+          )}
+        </div>
+      )}
+
       <Card padding="none">
         {games.length === 0 ? (
           <div className="py-10 text-center text-sm text-muted-foreground">
@@ -96,19 +223,41 @@ function GamesPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border-strong bg-secondary/40 text-left">
-                  <th className="stamp px-6 py-3 font-normal">Date</th>
+                  <th className="px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={toggleAll}
+                      aria-label="Select all games"
+                      className="h-4 w-4 rounded border-border accent-primary"
+                    />
+                  </th>
                   <th className="stamp py-3 pr-3 font-normal">Matchup</th>
                   <th className="stamp px-2 py-3 text-right font-normal">Score</th>
-                  <th className="stamp px-6 py-3 text-right font-normal">Players</th>
+                  {activeSquad && !activeSquad.isPersonal && (
+                    <th className="stamp px-4 py-3 font-normal">Uploaded by</th>
+                  )}
+                  <th className="stamp px-2 py-3 text-right font-normal">Players</th>
+                  <th className="stamp px-4 py-3 text-right font-normal" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {games.map((g) => {
                   const winner = g.homeScore >= g.awayScore ? g.homeTeam : g.awayTeam;
+                  const uploader = nameFor(g.uploadedByUserId);
                   return (
-                    <tr key={g.id} className="hover:bg-secondary/40">
-                      <td className="stamp px-6 py-4">
-                        {g.date ? formatDate(g.date.slice(0, 10), { year: true }) : "—"}
+                    <tr
+                      key={g.id}
+                      className={selected.has(g.id) ? "bg-primary/5" : "hover:bg-secondary/40"}
+                    >
+                      <td className="px-4 py-4">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(g.id)}
+                          onChange={() => toggle(g.id)}
+                          aria-label={`Select ${g.homeTeam} vs ${g.awayTeam}`}
+                          className="h-4 w-4 rounded border-border accent-primary"
+                        />
                       </td>
                       <td className="py-4 pr-3">
                         <Link
@@ -118,15 +267,51 @@ function GamesPage() {
                         >
                           {g.homeTeam} vs {g.awayTeam}
                         </Link>
-                        <div className="mt-0.5">
+                        <div className="mt-0.5 flex items-center gap-2">
+                          <span className="stamp">
+                            {g.date ? formatDate(g.date.slice(0, 10), { year: true }) : "—"}
+                          </span>
                           <Badge tone="success">{winner} won</Badge>
                         </div>
                       </td>
                       <td className="px-2 text-right font-mono font-semibold tabular-nums">
                         {g.homeScore}–{g.awayScore}
                       </td>
-                      <td className="px-6 text-right font-mono tabular-nums text-muted-foreground">
+                      {activeSquad && !activeSquad.isPersonal && (
+                        <td className="px-4 py-4">
+                          {uploader ? (
+                            <div className="flex items-center gap-2">
+                              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-secondary text-[10px] font-semibold">
+                                {uploader.slice(0, 2).toUpperCase()}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {g.uploadedByUserId === user?.id ? "You" : uploader}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </td>
+                      )}
+                      <td className="px-2 text-right font-mono tabular-nums text-muted-foreground">
                         {g.players?.length ?? 0}
+                      </td>
+                      <td className="px-4 py-4 text-right">
+                        {canModify(g) ? (
+                          <button
+                            onClick={() => setConfirmDelete(g)}
+                            className="text-xs text-muted-foreground hover:text-destructive"
+                          >
+                            Delete
+                          </button>
+                        ) : (
+                          <span
+                            className="text-xs text-muted-foreground/40"
+                            title="Only the uploader or squad owner can delete this game"
+                          >
+                            —
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -136,6 +321,35 @@ function GamesPage() {
           </div>
         )}
       </Card>
+
+      <AlertDialog open={!!confirmDelete} onOpenChange={(o) => !o && setConfirmDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this game?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDelete && (
+                <>
+                  {confirmDelete.homeTeam} vs {confirmDelete.awayTeam} will be removed for everyone
+                  in this squad, along with its players and screenshot. This can't be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={del.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                if (confirmDelete) del.mutate(confirmDelete.id);
+              }}
+              disabled={del.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {del.isPending ? "Deleting…" : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppShell>
   );
 }

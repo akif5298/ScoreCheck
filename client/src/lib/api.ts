@@ -1,9 +1,20 @@
 const BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
 
+// The localStorage key the squad switcher writes and buildHeaders reads. Shared here so the
+// two cannot drift. buildHeaders is a plain function, not a hook, so it reads storage
+// directly rather than React context — every request must carry the scope, including ones
+// fired outside a component.
+export const ACTIVE_SQUAD_KEY = "activeSquadId";
+
 function buildHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const token = typeof localStorage !== "undefined" ? localStorage.getItem("token") : null;
+  const squadId =
+    typeof localStorage !== "undefined" ? localStorage.getItem(ACTIVE_SQUAD_KEY) : null;
   const h: Record<string, string> = { ...extra };
   if (token) h["Authorization"] = `Bearer ${token}`;
+  // Omitted when unset: the server then falls back to the user's stored activeSquadId, so a
+  // fresh session is correctly scoped before the switcher has written anything.
+  if (squadId) h["X-Squad-Id"] = squadId;
   return h;
 }
 

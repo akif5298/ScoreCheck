@@ -174,12 +174,17 @@ export async function assertOwner(
 export async function listSquadsForUser(
   userId: string,
   db: Queryable = pgClient,
-): Promise<Array<Squad & { role: SquadRole; memberCount: number }>> {
-  const result = await db.query<Squad & { role: SquadRole; memberCount: number }>(
+): Promise<Array<Squad & { role: SquadRole; memberCount: number; gameCount: number; isActive: boolean }>> {
+  const result = await db.query<
+    Squad & { role: SquadRole; memberCount: number; gameCount: number; isActive: boolean }
+  >(
     `SELECT s.id, s.name, s."isPersonal", s."createdByUserId", sm.role,
-            (SELECT COUNT(*)::int FROM squad_members m WHERE m."squadId" = s.id) AS "memberCount"
+            (SELECT COUNT(*)::int FROM squad_members m WHERE m."squadId" = s.id) AS "memberCount",
+            (SELECT COUNT(*)::int FROM games g WHERE g."squadId" = s.id) AS "gameCount",
+            (u."activeSquadId" = s.id) AS "isActive"
      FROM squads s
      JOIN squad_members sm ON sm."squadId" = s.id AND sm."userId" = $1
+     JOIN users u ON u.id = $1
      ORDER BY s."isPersonal" DESC, s.name ASC`,
     [userId],
   );

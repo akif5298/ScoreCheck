@@ -1,6 +1,7 @@
 import { Link, useRouterState, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { useAuth } from "@/contexts/auth-context";
+import { SquadSwitcher } from "@/components/squad-switcher";
 
 const nav = [
   { to: "/", label: "Overview", code: "01" },
@@ -8,8 +9,10 @@ const nav = [
   { to: "/games", label: "Games", code: "03" },
   { to: "/players", label: "Players", code: "04" },
   { to: "/roster", label: "Roster", code: "05" },
-  { to: "/teams", label: "Teams", code: "06" },
+  // "Teams" here means box-score home/away rows; renamed to avoid reading as a synonym of Squad.
+  { to: "/teams", label: "Matchups", code: "06" },
   { to: "/analytics", label: "Analytics", code: "07" },
+  { to: "/squad", label: "Squad", code: "11" },
   { to: "/eval", label: "Eval harness", code: "08" },
   { to: "/admin", label: "Admin", code: "09" },
   { to: "/settings", label: "Settings", code: "10" },
@@ -54,6 +57,8 @@ export function AppShell({
             <span className="stamp">NBA 2K26 · v1.4</span>
           </div>
         </Link>
+
+        <SquadSwitcher />
 
         <nav className="flex-1 overflow-y-auto p-3">
           <div className="stamp px-3 pb-2 pt-3">Workspace</div>
@@ -185,7 +190,8 @@ const crumbMap: Record<string, string> = {
   "/roster": "Roster",
   "/analytics": "Analytics",
   "/games": "Games",
-  "/teams": "Teams",
+  "/teams": "Matchups",
+  "/squad": "Squad",
   "/eval": "Eval harness",
   "/settings": "Settings",
   "/admin": "Admin",

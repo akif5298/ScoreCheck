@@ -1,8 +1,13 @@
 // Prisma schema — reconciled with the live Supabase database via `prisma db pull`
-// (2026-07-18). The live DB is the source of truth; migrations are baselined from
-// this schema (see prisma/migrations/0_init). Note: data routes use the raw pg
-// service layer (src/services/supabase.ts); Prisma is used by admin routes and
-// scripts, so field names here must stay in sync with the raw SQL.
+// (2026-07-18), then extended with the Squad ownership model (2026-07-19).
+//
+// OWNERSHIP MODEL: data is owned by a Squad, never directly by a User. Every user gets
+// an auto-created personal squad (isPersonal = true) on signup, so "personal" is simply a
+// squad of one and every query filters on a single key: squadId. Game.uploadedByUserId is
+// retained for attribution and the delete/move permission — it is NOT the access-control key.
+//
+// Note: data routes use the raw pg service layer (src/services/supabase.ts); Prisma is used
+// by admin routes and scripts, so field names here must stay in sync with the raw SQL.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,40 +20,153 @@ datasource db {
 }
 
 model User {
-  id           String         @id @default(cuid())
-  email        String         @unique
-  appleId      String?        @unique
-  name         String?
-  passwordHash String?
-  role         String         @default("USER")
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  games        Game[]
-  playerStats  PlayerStats[]
-  playerTotals PlayerTotals[]
-  players      Player[]
-  teams        Team[]
+  id            String   @id @default(cuid())
+  email         String   @unique
+  appleId       String?  @unique
+  name          String?
+  passwordHash  String?
+  role          String   @default("USER")
+  activeSquadId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  activeSquad      Squad?          @relation("UserActiveSquad", fields: [activeSquadId], references: [id], onDelete: SetNull)
+  createdSquads    Squad[]         @relation("SquadCreatedBy")
+  memberships      SquadMember[]
+  uploadedGames    Game[]          @relation("GameUploadedBy")
+  createdInvites   SquadInvite[]   @relation("InviteCreatedBy")
+  editLocks        GameEditLock[]
+  auditEntries     SquadAuditLog[]
+  rosterIdentities PlayerMapping[] @relation("MappingLinkedUser")
 
   @@map("users")
 }
 
-model Game {
-  id            String   @id @default(cuid())
-  date          DateTime
-  homeTeam      String
-  awayTeam      String
-  homeScore     Int
-  awayScore     Int
-  screenshotUrl String?
-  processed     Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  userId        String
-  imageHash     String?
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  players       Player[]
-  teams         Team[]
+/// A group of users sharing one pool of games, mappings and analytics.
+/// isPersonal squads are auto-created per user and hold their unshared data.
+model Squad {
+  id              String   @id @default(cuid())
+  name            String
+  isPersonal      Boolean  @default(false)
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
+  createdBy      User            @relation("SquadCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  activeForUsers User[]          @relation("UserActiveSquad")
+  members        SquadMember[]
+  invites        SquadInvite[]
+  games          Game[]
+  players        Player[]
+  teams          Team[]
+  playerStats    PlayerStats[]
+  playerTotals   PlayerTotals[]
+  mappings       PlayerMapping[]
+  auditLog       SquadAuditLog[]
+
+  @@index([createdByUserId])
+  @@map("squads")
+}
+
+model SquadMember {
+  id       String   @id @default(cuid())
+  squadId  String
+  userId   String
+  /// OWNER | MEMBER
+  role     String   @default("MEMBER")
+  joinedAt DateTime @default(now())
+
+  squad Squad @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([squadId, userId])
+  @@index([userId])
+  @@map("squad_members")
+}
+
+model SquadInvite {
+  id              String    @id @default(cuid())
+  squadId         String
+  token           String    @unique
+  createdByUserId String
+  /// Role granted on acceptance. OWNER | MEMBER
+  role            String    @default("MEMBER")
+  expiresAt       DateTime
+  /// 0 = unlimited uses until expiry or revocation
+  maxUses         Int       @default(0)
+  usedCount       Int       @default(0)
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  squad     Squad @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  createdBy User  @relation("InviteCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([squadId])
+  @@map("squad_invites")
+}
+
+/// Short-lived advisory lease held while a member has a game open in the editor.
+/// Expires on its own (see expiresAt) so a closed tab cannot lock a game forever.
+model GameEditLock {
+  gameId     String   @id
+  userId     String
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("game_edit_locks")
+}
+
+/// Who changed what, written in the same transaction as the mutation it records.
+model SquadAuditLog {
+  id         String   @id @default(cuid())
+  squadId    String
+  userId     String
+  /// GAME | MEMBER | INVITE | SQUAD
+  entityType String
+  entityId   String
+  /// CREATE | EDIT | DELETE | MOVE_IN | MOVE_OUT | JOIN | LEAVE | REMOVE
+  action     String
+  /// Changed fields only, as a before/after diff — not full row snapshots.
+  changes    Json?
+  createdAt  DateTime @default(now())
+
+  squad Squad @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([squadId, createdAt])
+  @@index([entityId])
+  @@map("squad_audit_log")
+}
+
+model Game {
+  id               String   @id @default(cuid())
+  date             DateTime
+  homeTeam         String
+  awayTeam         String
+  homeScore        Int
+  awayScore        Int
+  screenshotUrl    String?
+  processed        Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  squadId          String
+  /// Attribution + delete/move permission. NOT the access-control key — squadId is.
+  uploadedByUserId String
+  imageHash        String?
+
+  squad      Squad         @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  uploadedBy User          @relation("GameUploadedBy", fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+  players    Player[]
+  teams      Team[]
+  editLock   GameEditLock?
+
+  @@index([squadId])
+  // Serves the squad-scoped perceptual-hash duplicate check on upload.
+  @@index([squadId, imageHash])
   @@map("games")
 }
 
@@ -76,14 +194,15 @@ model Player {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   gameId           String
-  userId           String
+  squadId          String
   fg_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
   three_percentage Decimal? @default(0.00) @db.Decimal(5, 2)
   ft_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
   game             Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  squad            Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
 
   @@unique([gameId, name, team])
+  @@index([squadId])
   @@map("players")
 }
 
@@ -107,27 +226,36 @@ model Team {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
   gameId           String
-  userId           String
+  squadId          String
   fg_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
   three_percentage Decimal? @default(0.00) @db.Decimal(5, 2)
   ft_percentage    Decimal? @default(0.00) @db.Decimal(5, 2)
   game             Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  squad            Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
 
   @@unique([gameId, name])
+  @@index([squadId])
   @@map("teams")
 }
 
 model PlayerMapping {
   id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId      String
+  squadId     String
   gamertag    String
   displayName String
+  /// Set when a squad member claims this roster entry as themselves. Powers the
+  /// cross-squad career view: it is the only link from an app user to their player rows.
+  linkedUserId String?
   createdAt   DateTime @default(now()) @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
-  @@unique([userId, gamertag], map: "player_mappings_userid_gamertag_key")
-  @@index([userId], map: "player_mappings_userid_idx")
+  squad      Squad @relation(fields: [squadId], references: [id], onDelete: Cascade)
+  linkedUser User? @relation("MappingLinkedUser", fields: [linkedUserId], references: [id], onDelete: SetNull)
+
+  @@unique([squadId, gamertag], map: "player_mappings_squadid_gamertag_key")
+  /// One roster entry per user per squad — stops two people claiming the same identity.
+  @@unique([squadId, linkedUserId], map: "player_mappings_squadid_linkeduserid_key")
+  @@index([squadId], map: "player_mappings_squadid_idx")
   @@map("player_mappings")
 }
 
@@ -156,22 +284,24 @@ model PlayerStats {
   totalFouls          Int      @default(0)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
-  userId              String
+  squadId             String
   totalfgmade         Int      @default(0)
   totalfgattempted    Int      @default(0)
   totalthreemade      Int      @default(0)
   totalthreeattempted Int      @default(0)
   totalftmade         Int      @default(0)
   totalftattempted    Int      @default(0)
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  squad               Squad    @relation(fields: [squadId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, playerName, team])
-  @@unique([playerName, userId], map: "player_stats_player_name_userid_unique")
+  @@unique([squadId, playerName, team])
+  @@unique([playerName, squadId], map: "player_stats_player_name_squadid_unique")
   @@map("player_stats")
 }
 
 /// Live table has row level security enabled; Prisma migrations don't manage
 /// RLS policies — see https://pris.ly/d/row-level-security.
+/// NOTE: this table uses lowercase column names throughout (squadid, createdat, …);
+/// that is pre-existing convention here, kept to avoid mixed casing within one table.
 model PlayerTotals {
   id               String   @id
   player_id        String
@@ -196,12 +326,12 @@ model PlayerTotals {
   ft_percentage    Decimal? @default(0.00) @db.Decimal
   createdat        DateTime @default(now()) @db.Timestamp(6)
   updatedat        DateTime @db.Timestamp(6)
-  userid           String
-  user             User     @relation(fields: [userid], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  squadid          String
+  squad            Squad    @relation(fields: [squadid], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@unique([player_id, userid], map: "player_totals_player_id_unique")
+  @@unique([player_id, squadid], map: "player_totals_player_id_unique")
   @@index([player_id], map: "idx_player_totals_player_id")
   @@index([team], map: "idx_player_totals_team")
-  @@index([userid], map: "idx_player_totals_userid")
+  @@index([squadid], map: "idx_player_totals_squadid")
   @@map("player_totals")
 }

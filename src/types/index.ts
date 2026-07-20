@@ -20,7 +20,10 @@ export interface Game {
   processed: boolean;
   createdAt: Date;
   updatedAt: Date;
-  userId: string;
+  /** Ownership scope. All access control filters on this. */
+  squadId: string;
+  /** Attribution + delete/move rights. NOT the access-control key. */
+  uploadedByUserId: string;
 }
 
 export interface Player {
@@ -47,7 +50,7 @@ export interface Player {
   createdAt: Date;
   updatedAt: Date;
   gameId: string;
-  userId: string;
+  squadId: string;
 }
 
 export interface Team {
@@ -70,7 +73,7 @@ export interface Team {
   createdAt: Date;
   updatedAt: Date;
   gameId: string;
-  userId: string;
+  squadId: string;
 }
 
 export interface PlayerStats {
@@ -99,7 +102,7 @@ export interface PlayerStats {
   totalFouls: number;
   createdAt: Date;
   updatedAt: Date;
-  userId: string;
+  squadId: string;
 }
 
 export interface JwtPayload {

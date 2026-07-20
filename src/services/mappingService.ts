@@ -3,17 +3,17 @@ import logger from '@/utils/logger';
 
 export interface PlayerMapping {
   id: string;
-  userId: string;
+  squadId: string;
   gamertag: string;
   displayName: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export async function getMappingsForUser(userId: string): Promise<Map<string, string>> {
+export async function getMappingsForSquad(squadId: string): Promise<Map<string, string>> {
   const result = await pgClient.query<{ gamertag: string; displayName: string }>(
-    `SELECT gamertag, "displayName" FROM player_mappings WHERE "userId" = $1`,
-    [userId],
+    `SELECT gamertag, "displayName" FROM player_mappings WHERE "squadId" = $1`,
+    [squadId],
   );
   const map = new Map<string, string>();
   for (const row of result.rows) {
@@ -28,53 +28,53 @@ export async function getMappingsForUser(userId: string): Promise<Map<string, st
  * ALLOWED_PLAYER_NAMES list: a player only accrues totals once the user maps
  * a gamertag to them on the roster page.
  */
-export async function getAllowedNamesForUser(userId: string): Promise<Set<string>> {
+export async function getAllowedNamesForSquad(squadId: string): Promise<Set<string>> {
   const result = await pgClient.query<{ displayName: string }>(
-    `SELECT DISTINCT "displayName" FROM player_mappings WHERE "userId" = $1`,
-    [userId],
+    `SELECT DISTINCT "displayName" FROM player_mappings WHERE "squadId" = $1`,
+    [squadId],
   );
   return new Set(result.rows.map((r) => r.displayName));
 }
 
-export async function getAllowedNamesArray(userId: string): Promise<string[]> {
-  return Array.from(await getAllowedNamesForUser(userId));
+export async function getAllowedNamesArray(squadId: string): Promise<string[]> {
+  return Array.from(await getAllowedNamesForSquad(squadId));
 }
 
-export async function listMappingsForUser(userId: string): Promise<PlayerMapping[]> {
+export async function listMappingsForSquad(squadId: string): Promise<PlayerMapping[]> {
   const result = await pgClient.query<PlayerMapping>(
-    `SELECT id, "userId", gamertag, "displayName", "createdAt", "updatedAt"
-     FROM player_mappings WHERE "userId" = $1 ORDER BY gamertag ASC`,
-    [userId],
+    `SELECT id, "squadId", gamertag, "displayName", "createdAt", "updatedAt"
+     FROM player_mappings WHERE "squadId" = $1 ORDER BY gamertag ASC`,
+    [squadId],
   );
   return result.rows;
 }
 
 export async function createMapping(
-  userId: string,
+  squadId: string,
   gamertag: string,
   displayName: string,
 ): Promise<PlayerMapping> {
   const result = await pgClient.query<PlayerMapping>(
-    `INSERT INTO player_mappings (id, "userId", gamertag, "displayName", "createdAt", "updatedAt")
+    `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
      VALUES (gen_random_uuid()::text, $1, $2, $3, NOW(), NOW())
-     RETURNING id, "userId", gamertag, "displayName", "createdAt", "updatedAt"`,
-    [userId, gamertag, displayName],
+     RETURNING id, "squadId", gamertag, "displayName", "createdAt", "updatedAt"`,
+    [squadId, gamertag, displayName],
   );
   return result.rows[0]!;
 }
 
 export async function updateMapping(
   id: string,
-  userId: string,
+  squadId: string,
   gamertag: string,
   displayName: string,
 ): Promise<PlayerMapping> {
   const result = await pgClient.query<PlayerMapping>(
     `UPDATE player_mappings
      SET gamertag = $3, "displayName" = $4, "updatedAt" = NOW()
-     WHERE id = $1 AND "userId" = $2
-     RETURNING id, "userId", gamertag, "displayName", "createdAt", "updatedAt"`,
-    [id, userId, gamertag, displayName],
+     WHERE id = $1 AND "squadId" = $2
+     RETURNING id, "squadId", gamertag, "displayName", "createdAt", "updatedAt"`,
+    [id, squadId, gamertag, displayName],
   );
   if (result.rows.length === 0) {
     throw Object.assign(new Error('Mapping not found'), { status: 404 });
@@ -82,11 +82,11 @@ export async function updateMapping(
   return result.rows[0]!;
 }
 
-export async function getMappingById(id: string, userId: string): Promise<PlayerMapping | null> {
+export async function getMappingById(id: string, squadId: string): Promise<PlayerMapping | null> {
   const result = await pgClient.query<PlayerMapping>(
-    `SELECT id, "userId", gamertag, "displayName", "createdAt", "updatedAt"
-     FROM player_mappings WHERE id = $1 AND "userId" = $2`,
-    [id, userId],
+    `SELECT id, "squadId", gamertag, "displayName", "createdAt", "updatedAt"
+     FROM player_mappings WHERE id = $1 AND "squadId" = $2`,
+    [id, squadId],
   );
   return result.rows[0] ?? null;
 }
@@ -98,28 +98,28 @@ export async function getMappingById(id: string, userId: string): Promise<Player
  * Returns the total number of per-game player rows renamed.
  */
 export async function applyRetroactiveMapping(
-  userId: string,
+  squadId: string,
   gamertag: string,
   displayName: string,
   oldDisplayName?: string,
 ): Promise<number> {
   let total = 0;
-  total += await renameInDb(userId, gamertag, displayName);
+  total += await renameInDb(squadId, gamertag, displayName);
   if (oldDisplayName && oldDisplayName.toLowerCase() !== displayName.toLowerCase()) {
-    total += await renameInDb(userId, oldDisplayName, displayName);
+    total += await renameInDb(squadId, oldDisplayName, displayName);
   }
   return total;
 }
 
-async function renameInDb(userId: string, fromName: string, toName: string): Promise<number> {
+async function renameInDb(squadId: string, fromName: string, toName: string): Promise<number> {
   // Skip if the names are already the same.
   if (fromName.toLowerCase() === toName.toLowerCase()) return 0;
 
   // Rename per-game player records.
   const playerRes = await pgClient.query(
     `UPDATE players SET name = $3, "updatedAt" = NOW()
-     WHERE "userId" = $1 AND LOWER(name) = LOWER($2) AND LOWER(name) != LOWER($3)`,
-    [userId, fromName, toName],
+     WHERE "squadId" = $1 AND LOWER(name) = LOWER($2) AND LOWER(name) != LOWER($3)`,
+    [squadId, fromName, toName],
   );
   const count = playerRes.rowCount ?? 0;
   if (count === 0) return 0;
@@ -131,23 +131,23 @@ async function renameInDb(userId: string, fromName: string, toName: string): Pro
   try {
     await pgClient.query(
       `UPDATE player_stats SET "playerName" = $3, "updatedAt" = NOW()
-       WHERE "userId" = $1 AND LOWER("playerName") = LOWER($2)`,
-      [userId, fromName, toName],
+       WHERE "squadId" = $1 AND LOWER("playerName") = LOWER($2)`,
+      [squadId, fromName, toName],
     );
   } catch {
     await pgClient.query(
-      `DELETE FROM player_stats WHERE "userId" = $1 AND LOWER("playerName") = LOWER($2)`,
-      [userId, fromName],
+      `DELETE FROM player_stats WHERE "squadId" = $1 AND LOWER("playerName") = LOWER($2)`,
+      [squadId, fromName],
     );
   }
 
   return count;
 }
 
-export async function deleteMapping(id: string, userId: string): Promise<void> {
+export async function deleteMapping(id: string, squadId: string): Promise<void> {
   const result = await pgClient.query(
-    `DELETE FROM player_mappings WHERE id = $1 AND "userId" = $2`,
-    [id, userId],
+    `DELETE FROM player_mappings WHERE id = $1 AND "squadId" = $2`,
+    [id, squadId],
   );
   if ((result.rowCount ?? 0) === 0) {
     throw Object.assign(new Error('Mapping not found'), { status: 404 });

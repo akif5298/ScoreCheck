@@ -23,7 +23,7 @@ const LINEUP_EFFICIENCY_SQL = `
       END AS point_diff
     FROM players p
     JOIN games g ON g.id = p."gameId"
-    WHERE g."userId" = $1
+    WHERE g."squadId" = $1
     GROUP BY g.id, p.team, g."homeTeam", g."homeScore", g."awayScore"
   )
   SELECT
@@ -40,11 +40,11 @@ const LINEUP_EFFICIENCY_SQL = `
 `;
 
 export async function getLineupEfficiency(
-  userId: string,
+  squadId: string,
   db: Pick<Client, 'query'>,
   minGames: number = DEFAULT_MIN_GAMES,
 ): Promise<LineupEfficiency[]> {
-  const result = await db.query(LINEUP_EFFICIENCY_SQL, [userId, minGames]);
+  const result = await db.query(LINEUP_EFFICIENCY_SQL, [squadId, minGames]);
   return result.rows.map((row: any) => ({
     players: row.players as string[],
     team: row.team as string,

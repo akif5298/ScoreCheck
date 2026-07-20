@@ -16,18 +16,16 @@ jest.mock('@/services/supabase', () => ({
     getGameByScreenshotUrl: jest.fn(),
     getGameById: jest.fn(),
     saveGameWithStats: jest.fn(),
-    getGamesByUserId: jest.fn(),
-    getPlayerTotalsByPlayerName: jest.fn(),
-    updatePlayerTotals: jest.fn(),
-    createPlayerTotals: jest.fn(),
-    updatePlayerStatsFromTotals: jest.fn(),
+    getGamesBySquadId: jest.fn(),
+    // Single aggregate path; the per-player incremental helpers are gone.
+    recomputeSquadAggregates: jest.fn(),
   },
 }));
 
 jest.mock('@/services/mappingService', () => ({
   __esModule: true,
-  getMappingsForUser: jest.fn().mockResolvedValue(new Map()),
-  getAllowedNamesForUser: jest.fn().mockResolvedValue(new Set(['Akif'])),
+  getMappingsForSquad: jest.fn().mockResolvedValue(new Map()),
+  getAllowedNamesForSquad: jest.fn().mockResolvedValue(new Set(['Akif'])),
   getAllowedNamesArray: jest.fn().mockResolvedValue(['Akif']),
 }));
 
@@ -53,6 +51,18 @@ jest.mock('@/middleware/auth', () => ({
     req.user = { userId: 'test-user-123', email: 'test@example.com', role: 'USER' };
     next();
   },
+}));
+
+jest.mock('@/middleware/squad', () => ({
+  // Stands in for the DB-backed scope resolution; routes just need req.squadId set.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resolveSquad: (req: any, _res: any, next: any) => {
+    req.squadId = 'test-squad-1';
+    next();
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  requireSquadId: (req: any) => req.squadId,
+  SQUAD_HEADER: 'x-squad-id',
 }));
 
 // ── Imports (resolved after mocks are hoisted) ───────────────────────────────
@@ -128,10 +138,8 @@ beforeEach(() => {
   mocked.getGameByScreenshotUrl.mockResolvedValue(null);
   mocked.getGameById.mockResolvedValue({ ...mockGame, players: [mockPlayer] });
   mocked.saveGameWithStats.mockResolvedValue({ game: mockGame, players: [mockPlayer] });
-  mocked.getGamesByUserId.mockResolvedValue([]);
-  mocked.getPlayerTotalsByPlayerName.mockResolvedValue(null);
-  mocked.createPlayerTotals.mockResolvedValue({});
-  (mocked.updatePlayerStatsFromTotals as jest.Mock).mockResolvedValue(undefined);
+  mocked.getGamesBySquadId.mockResolvedValue([]);
+  (mocked.recomputeSquadAggregates as jest.Mock).mockResolvedValue({ players: 1 });
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -151,12 +159,12 @@ describe('POST /save', () => {
     });
 
     it('returns the saved players — not the user\'s game list — in data.players', async () => {
-      // Regression: data.players was previously populated from getGamesByUserId, so a field
+      // Regression: data.players was previously populated from getGamesBySquadId, so a field
       // typed Player[] carried Game objects.
       const res = await request(app).post('/save').send(validBody);
 
       expect(res.body.data.players).toEqual([expect.objectContaining({ id: 'player-1' })]);
-      expect(mocked.getGamesByUserId).not.toHaveBeenCalled();
+      expect(mocked.getGamesBySquadId).not.toHaveBeenCalled();
     });
 
     it('calls saveGameWithStats exactly once', async () => {
@@ -184,7 +192,7 @@ describe('POST /save', () => {
       const existingGame = { ...mockGame, id: 'existing-game' };
       mocked.getGameByScreenshotUrl.mockResolvedValue(existingGame);
       mocked.getGameById.mockResolvedValue({ ...existingGame, players: [mockPlayer] });
-      mocked.getGamesByUserId.mockResolvedValue([]);
+      mocked.getGamesBySquadId.mockResolvedValue([]);
 
       const res = await request(app).post('/save').send(validBody);
 
@@ -247,27 +255,31 @@ describe('POST /save', () => {
       expect(res.body.success).toBe(false);
     });
 
-    it('does not call updatePlayerStatsFromTotals when the transaction fails', async () => {
+    it('does not rebuild aggregates when the transaction fails', async () => {
       mocked.saveGameWithStats.mockRejectedValue(new Error('Transaction rolled back'));
 
       await request(app).post('/save').send(validBody);
 
-      expect(mocked.updatePlayerStatsFromTotals).not.toHaveBeenCalled();
+      expect(mocked.recomputeSquadAggregates).not.toHaveBeenCalled();
     });
   });
 
-  describe('updatePlayerStats error isolation', () => {
-    it('returns 200 even when getPlayerTotalsByPlayerName throws for a tracked player', async () => {
-      // 'Akif' is in the mocked allowed-names set, which triggers the updatePlayerTotals path.
-      // The inner catch in updatePlayerTotals must absorb this error.
-      mocked.getPlayerTotalsByPlayerName.mockRejectedValue(new Error('Totals DB error'));
+  describe('aggregate rebuild', () => {
+    it('rebuilds aggregates for the caller squad after a successful save', async () => {
+      await request(app).post('/save').send(validBody);
 
-      const bodyWithTrackedPlayer = {
-        ...validBody,
-        playersData: [{ ...validPlayer, name: 'Akif' }],
-      };
+      expect(mocked.recomputeSquadAggregates).toHaveBeenCalledWith('test-squad-1');
+    });
 
-      const res = await request(app).post('/save').send(bodyWithTrackedPlayer);
+    it('still returns 200 when the rebuild fails, because the game is already committed', async () => {
+      // The save transaction has already committed by this point, so reporting a failure
+      // would misdescribe what happened. The rebuild is idempotent and derived from
+      // `players`, so the next write in this squad repairs it.
+      (mocked.recomputeSquadAggregates as jest.Mock).mockRejectedValue(
+        new Error('Totals DB error'),
+      );
+
+      const res = await request(app).post('/save').send(validBody);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);

@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import supabaseService from './supabase';
+import supabaseService, { pgPool } from './supabase';
+import { createPersonalSquad } from './squadService';
 import { User, JwtPayload } from '@/types';
 import logger from '@/utils/logger';
 
@@ -96,11 +97,29 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
-    const user = await supabaseService.createLocalUser({
-      email: input.email,
-      name: input.name ?? null,
-      passwordHash,
-    });
+
+    // The user and their personal squad are created together: an account with no personal
+    // squad has no resolvable data scope, so it must never be possible to create one.
+    const client = await pgPool.connect();
+    let user;
+    try {
+      await client.query('BEGIN');
+      user = await supabaseService.createLocalUser(
+        { email: input.email, name: input.name ?? null, passwordHash },
+        client,
+      );
+      await createPersonalSquad(user.id, client);
+      await client.query('COMMIT');
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.error({ err: rollbackErr }, 'Rollback failed after signup error');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
 
     logger.info({ userId: user.id }, 'User signed up');
     return { user: toPublicUser(user), token: this.generateToken(user) };

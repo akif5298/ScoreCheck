@@ -9,6 +9,7 @@ import supabaseService from '@/services/supabase';
 import { EnhancedOCRService } from '@/services/enhancedOCRService';
 import BoxScoreParser from '@/services/boxScoreParser';
 import { authenticateToken } from '@/middleware/auth';
+import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { ApiResponse, Game, Player } from '@/types';
 import { classifyScreenshot } from '@/services/junkFilter';
 import { assertExtractionHostReachable } from '@/services/ollamaExtractor';
@@ -16,8 +17,8 @@ import { computePerceptualHash, hammingDistance } from '@/utils/imageHash';
 import { ValidationError, ExtractionUnavailableError } from '@/errors';
 import logger from '@/utils/logger';
 import {
-  getMappingsForUser,
-  getAllowedNamesForUser,
+  getMappingsForSquad,
+  getAllowedNamesForSquad,
   getAllowedNamesArray,
 } from '@/services/mappingService';
 import {
@@ -156,7 +157,7 @@ const upload = multer({
 
 
 // Upload and process multiple box score screenshots for review
-router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQuota, upload.array('screenshots', 10), async (req: Request, res: Response) => {
+router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit, extractionQuota, upload.array('screenshots', 10), async (req: Request, res: Response) => {
   try {
     const files = req.files as Express.Multer.File[];
 
@@ -193,7 +194,7 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQu
 
         // Perceptual-hash duplicate check (before OCR to avoid wasted GCV calls)
         const imageHash = await computePerceptualHash(file.buffer);
-        const existingHashes = await supabaseService.getGameHashesByUserId(req.user!.userId);
+        const existingHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
         const isDuplicate = existingHashes.some(h => hammingDistance(imageHash, h) <= 10);
         if (isDuplicate) {
           throw Object.assign(new Error(`${file.originalname}: visually similar screenshot already saved`), {
@@ -211,7 +212,7 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQu
         // Mappings fetched once per batch outside the per-file loop — not available here,
         // so fetch per file (fail-open on error).
         let fileMappings: Map<string, string> | undefined;
-        try { fileMappings = await getMappingsForUser(req.user!.userId); } catch {}
+        try { fileMappings = await getMappingsForSquad(requireSquadId(req)); } catch {}
         const extractedData = await enhancedOCRService.extractStructuredDataFromImage(file.buffer, file.originalname, fileMappings);
 
         // Upload to Supabase
@@ -265,7 +266,7 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQu
 });
 
 // Keep the original single upload for backward compatibility
-router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, upload.single('screenshot'), async (req: Request, res: Response) => {
+router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extractionQuota, upload.single('screenshot'), async (req: Request, res: Response) => {
   try {
     if (!req.file) {
       const response: ApiResponse = {
@@ -291,7 +292,7 @@ router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, uplo
 
     // Perceptual-hash duplicate check (before OCR to avoid wasted GCV calls)
     const imageHash = await computePerceptualHash(req.file.buffer);
-    const existingHashes = await supabaseService.getGameHashesByUserId(req.user.userId);
+    const existingHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
     if (existingHashes.some(h => hammingDistance(imageHash, h) <= 10)) {
       return res.status(409).json({
         success: false,
@@ -313,7 +314,7 @@ router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, uplo
     // Fetch gamertag→displayName mappings for this user (fail-open: proceed without if DB errors)
     let mappings: Map<string, string> | undefined;
     try {
-      mappings = await getMappingsForUser(req.user.userId);
+      mappings = await getMappingsForSquad(requireSquadId(req));
     } catch (err) {
       logger.error({ err }, 'Failed to fetch player mappings — proceeding without mapping');
     }
@@ -419,7 +420,7 @@ router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, uplo
 });
 
 // Save the reviewed data to the database
-router.post('/save', authenticateToken, async (req: Request, res: Response) => {
+router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -451,12 +452,12 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     }
 
     // Check if a game with this image URL already exists to prevent duplicates
-    const existingGame = await supabaseService.getGameByScreenshotUrl(imageUrl, req.user.userId);
+    const existingGame = await supabaseService.getGameByScreenshotUrl(imageUrl, requireSquadId(req));
     if (existingGame) {
       logger.info({ gameId: existingGame.id }, 'Duplicate save request — returning existing game');
       // Return this game's own players. (json_agg yields [null] for a game with no player
       // rows, so strip nulls rather than surfacing them to the client.)
-      const existingFull = await supabaseService.getGameById(existingGame.id, req.user.userId);
+      const existingFull = await supabaseService.getGameById(existingGame.id, requireSquadId(req));
       const existingPlayers = ((existingFull?.players ?? []) as (Player | null)[]).filter(
         (p): p is Player => p != null,
       );
@@ -533,7 +534,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
           ? Math.round((ftMade / ftAttempted) * 100 * 100) / 100
           : 0.00,
         gameId,
-        userId: req.user!.userId,
+        squadId: requireSquadId(req),
       };
     });
 
@@ -600,7 +601,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
         ? Math.round((homeTeamTotals.ftMade / homeTeamTotals.ftAttempted) * 100 * 100) / 100
         : 0.00,
       gameId,
-      userId: req.user!.userId,
+      squadId: requireSquadId(req),
     };
 
     const awayTeamInput = {
@@ -630,7 +631,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
         ? Math.round((awayTeamTotals.ftMade / awayTeamTotals.ftAttempted) * 100 * 100) / 100
         : 0.00,
       gameId,
-      userId: req.user!.userId,
+      squadId: requireSquadId(req),
     };
 
     // Retrieve the perceptual hash stored at upload time (null if upload route not used).
@@ -651,7 +652,9 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
         screenshotUrl: imageUrl,
         imageHash: savedImageHash,
         processed: true,
-        userId: req.user.userId,
+        squadId: requireSquadId(req),
+        // Attribution + delete/move rights. Distinct from squadId, which controls access.
+        uploadedByUserId: req.user.userId,
       },
       playerInputs,
       homeTeamInput,
@@ -661,122 +664,23 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     // Save committed — the upload→save hash bridge for this image is now consumed.
     pendingHashes.delete(imageUrl);
 
-    // Helper: accumulate player_totals for tracked players (does not write to player_stats directly).
-    // Tracked players = the user's mapped display names.
-    async function updatePlayerStats(gameId: string, players: IncomingPlayerData[], userId: string): Promise<void> {
-      try {
-        const allowedNames = await getAllowedNamesForUser(userId);
-        for (const playerData of players) {
-          if (!playerData.name || !allowedNames.has(playerData.name)) {
-            continue;
-          }
-          await updatePlayerTotals(playerData, userId);
-        }
-      } catch (error) {
-        // Don't fail the game save if totals update fails
-        logger.error({ err: error, gameId }, 'Error updating player totals');
-      }
+    // Rebuild aggregates for this squad from the rows just written. Replaces the previous
+    // per-player incremental accumulation, which had no decrement path and let totals
+    // drift away from the underlying games.
+    //
+    // The game itself is already committed at this point, so a failure here must not be
+    // reported as a failed save. It is logged loudly rather than swallowed, and because
+    // the rebuild is idempotent and derived entirely from `players`, the next save or edit
+    // in this squad repairs it — unlike the old incremental path, where a lost update was
+    // permanent.
+    try {
+      await supabaseService.recomputeSquadAggregates(requireSquadId(req));
+    } catch (aggregateErr) {
+      logger.error(
+        { err: aggregateErr, gameId: game.id, squadId: requireSquadId(req) },
+        'Game saved but squad aggregate rebuild failed — totals are stale until the next write',
+      );
     }
-
-    async function updatePlayerTotals(playerData: IncomingPlayerData, userId: string): Promise<void> {
-      const name = playerData.name;
-      if (!name) return;
-      try {
-        const existingTotals = await supabaseService.getPlayerTotalsByPlayerName(name, userId);
-
-        if (existingTotals) {
-          const safeAdd = (a: number, b: number) => {
-            const aVal = isNaN(a) ? 0 : (a || 0);
-            const bVal = isNaN(b) ? 0 : (b || 0);
-            return aVal + bVal;
-          };
-
-          const updatedTotals = {
-            total_games: existingTotals.total_games + 1,
-            total_points: safeAdd(existingTotals.total_points, playerData.points ?? 0),
-            total_assists: safeAdd(existingTotals.total_assists, playerData.assists ?? 0),
-            total_rebounds: safeAdd(existingTotals.total_rebounds, playerData.rebounds ?? 0),
-            total_steals: safeAdd(existingTotals.total_steals, playerData.steals ?? 0),
-            total_blocks: safeAdd(existingTotals.total_blocks, playerData.blocks ?? 0),
-            total_fouls: safeAdd(existingTotals.total_fouls, playerData.fouls ?? 0),
-            total_turnovers: safeAdd(existingTotals.total_turnovers, playerData.turnovers ?? 0),
-            total_fgm: safeAdd(existingTotals.total_fgm, playerData.fgMade ?? 0),
-            total_fga: safeAdd(existingTotals.total_fga, playerData.fgAttempted ?? 0),
-            total_3pm: safeAdd(existingTotals.total_3pm, playerData.threeMade ?? 0),
-            total_3pa: safeAdd(existingTotals.total_3pa, playerData.threeAttempted ?? 0),
-            total_ftm: safeAdd(existingTotals.total_ftm, playerData.ftMade ?? 0),
-            total_fta: safeAdd(existingTotals.total_fta, playerData.ftAttempted ?? 0),
-            fg_percentage: 0.00,
-            three_percentage: 0.00,
-            ft_percentage: 0.00,
-          };
-
-          updatedTotals.fg_percentage = updatedTotals.total_fga > 0
-            ? Math.round((updatedTotals.total_fgm / updatedTotals.total_fga) * 100 * 100) / 100
-            : 0.00;
-          updatedTotals.three_percentage = updatedTotals.total_3pa > 0
-            ? Math.round((updatedTotals.total_3pm / updatedTotals.total_3pa) * 100 * 100) / 100
-            : 0.00;
-          updatedTotals.ft_percentage = updatedTotals.total_fta > 0
-            ? Math.round((updatedTotals.total_ftm / updatedTotals.total_fta) * 100 * 100) / 100
-            : 0.00;
-
-          await supabaseService.updatePlayerTotals(name, userId, updatedTotals);
-
-        } else {
-          const safeNumber = (value: number | undefined) => {
-            const num = Number(value);
-            return isNaN(num) ? 0 : num;
-          };
-
-          const newTotals = {
-            id: `total_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            player_id: playerData.id
-              ? `${playerImageNumber}_P${playerData.id.match(/_(\d+)_/)?.[1] ?? '1'}`
-              : `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            player_name: name,
-            team: playerData.team ?? '',
-            total_games: 1,
-            total_points: safeNumber(playerData.points),
-            total_assists: safeNumber(playerData.assists),
-            total_rebounds: safeNumber(playerData.rebounds),
-            total_steals: safeNumber(playerData.steals),
-            total_blocks: safeNumber(playerData.blocks),
-            total_fouls: safeNumber(playerData.fouls),
-            total_turnovers: safeNumber(playerData.turnovers),
-            total_fgm: safeNumber(playerData.fgMade),
-            total_fga: safeNumber(playerData.fgAttempted),
-            total_3pm: safeNumber(playerData.threeMade),
-            total_3pa: safeNumber(playerData.threeAttempted),
-            total_ftm: safeNumber(playerData.ftMade),
-            total_fta: safeNumber(playerData.ftAttempted),
-            fg_percentage: playerData.fgAttempted && playerData.fgAttempted > 0
-              ? Math.round((safeNumber(playerData.fgMade) / safeNumber(playerData.fgAttempted)) * 100 * 100) / 100
-              : 0.00,
-            three_percentage: playerData.threeAttempted && playerData.threeAttempted > 0
-              ? Math.round((safeNumber(playerData.threeMade) / safeNumber(playerData.threeAttempted)) * 100 * 100) / 100
-              : 0.00,
-            ft_percentage: playerData.ftAttempted && playerData.ftAttempted > 0
-              ? Math.round((safeNumber(playerData.ftMade) / safeNumber(playerData.ftAttempted)) * 100 * 100) / 100
-              : 0.00,
-            userid: userId,
-          };
-
-          await supabaseService.createPlayerTotals(newTotals);
-        }
-      } catch (error) {
-        // Don't fail the game save if totals update fails
-        logger.error({ err: error, playerName: name }, 'Error updating player totals');
-      }
-    }
-
-    await updatePlayerStats(game.id, playersData, req.user.userId);
-
-    // Update player_stats table with averages from player_totals
-    await supabaseService.updatePlayerStatsFromTotals(
-      req.user.userId,
-      await getAllowedNamesArray(req.user.userId),
-    );
 
     const response: ApiResponse<{ game: Game; players: Player[] }> = {
       success: true,
@@ -808,7 +712,7 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
 });
 
 // Get all games for a user
-router.get('/games', authenticateToken, async (req: Request, res: Response) => {
+router.get('/games', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -818,7 +722,7 @@ router.get('/games', authenticateToken, async (req: Request, res: Response) => {
       return res.status(401).json(response);
     }
 
-    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
 
     const response: ApiResponse<Game[]> = {
       success: true,
@@ -839,7 +743,7 @@ router.get('/games', authenticateToken, async (req: Request, res: Response) => {
 });
 
 // Get specific game details
-router.get('/games/:gameId', authenticateToken, async (req: Request, res: Response) => {
+router.get('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     const { gameId } = req.params;
 
@@ -851,7 +755,7 @@ router.get('/games/:gameId', authenticateToken, async (req: Request, res: Respon
       return res.status(401).json(response);
     }
 
-    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const game = games.find(g => g.id === gameId);
 
     if (!game) {
@@ -882,7 +786,7 @@ router.get('/games/:gameId', authenticateToken, async (req: Request, res: Respon
 
 // Mint a fresh signed URL for a game's stored screenshot (owner-scoped).
 // games.screenshotUrl holds an object path, not a viewable URL.
-router.get('/games/:gameId/screenshot', authenticateToken, async (req: Request, res: Response) => {
+router.get('/games/:gameId/screenshot', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     const { gameId } = req.params;
 
@@ -890,7 +794,7 @@ router.get('/games/:gameId/screenshot', authenticateToken, async (req: Request, 
       return res.status(401).json({ success: false, error: 'User not authenticated' } as ApiResponse);
     }
 
-    const game = await supabaseService.getGameById(gameId!, req.user.userId);
+    const game = await supabaseService.getGameById(gameId!, requireSquadId(req));
     if (!game) {
       return res.status(404).json({ success: false, error: 'Game not found' } as ApiResponse);
     }
@@ -908,7 +812,7 @@ router.get('/games/:gameId/screenshot', authenticateToken, async (req: Request, 
 });
 
 // Generate custom team names after player name assignment
-router.post('/generate-team-names', authenticateToken, async (req: Request, res: Response) => {
+router.post('/generate-team-names', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -929,7 +833,7 @@ router.post('/generate-team-names', authenticateToken, async (req: Request, res:
     }
 
     // Generate custom team names from the user's mapped display names
-    const customNames = await getAllowedNamesArray(req.user.userId);
+    const customNames = await getAllowedNamesArray(requireSquadId(req));
     const { teamAName, teamBName } = EnhancedOCRService.generateCustomTeamNamesAfterAssignment(
       players,
       customNames,
@@ -954,56 +858,12 @@ router.post('/generate-team-names', authenticateToken, async (req: Request, res:
   }
 });
 
-// Start game edit route (subtract current stats from totals)
-router.post('/games/:gameId/start-edit', authenticateToken, async (req: Request, res: Response) => {
-  try {
-    const { gameId } = req.params;
-
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
-    if (!gameId) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'Game ID is required',
-      };
-      return res.status(400).json(response);
-    }
-
-    const allowedNames = await getAllowedNamesArray(req.user.userId);
-    const result = await supabaseService.startGameEdit(gameId, req.user.userId, allowedNames);
-
-    if (result) {
-      const response: ApiResponse = {
-        success: true,
-        data: result,
-        message: 'Game edit started successfully',
-      };
-      return res.json(response);
-    } else {
-      const response: ApiResponse = {
-        success: false,
-        error: 'Game not found',
-      };
-      return res.status(404).json(response);
-    }
-  } catch (error) {
-    logger.error({ err: error }, 'Error starting game edit');
-    const response: ApiResponse = {
-      success: false,
-      error: 'Internal server error',
-    };
-    return res.status(500).json(response);
-  }
-});
-
+// NOTE: POST /games/:gameId/start-edit was removed along with SupabaseService.startGameEdit.
+// It subtracted a game from player_totals up front, with no endpoint to restore them if the
+// edit was abandoned, and double-subtracted when the edit did complete. PUT /games/:gameId
+// now rebuilds aggregates from the stored rows instead, so no pre-edit step is needed.
 // Update game details
-router.put('/games/:gameId', authenticateToken, async (req: Request, res: Response) => {
+router.put('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     const { gameId } = req.params;
     const { homeTeam, awayTeam, homeScore, awayScore, date, players } = req.body;
@@ -1024,8 +884,9 @@ router.put('/games/:gameId', authenticateToken, async (req: Request, res: Respon
       return res.status(400).json(response);
     }
 
-    const allowedNames = await getAllowedNamesArray(req.user.userId);
-    const updatedGame = await supabaseService.updateGame(gameId!, req.user.userId, allowedNames, {
+    // allowedNames is no longer passed: updateGame rebuilds aggregates via
+    // recomputeSquadAggregates, which derives the tracked names from the squad roster itself.
+    const updatedGame = await supabaseService.updateGame(gameId!, requireSquadId(req), {
       homeTeam,
       awayTeam,
       homeScore,

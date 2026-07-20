@@ -45,6 +45,39 @@ pgPool.on('error', (err) => logger.error({ err }, 'Unexpected PostgreSQL pool er
 // so every non-transactional call site keeps working unchanged.
 export const pgClient = pgPool;
 
+// Rebuilds player_totals for one squad directly from its per-game `players` rows.
+// Adapted from RECOMPUTE_TOTALS_SQL in scripts/import-labeled-data.ts, re-scoped from
+// userId to squadId. That SQL was verified against production: rebuilding with it
+// reproduced the stored totals for all 8 tracked players exactly.
+const RECOMPUTE_TOTALS_SQL = `
+  INSERT INTO player_totals (
+    id, player_id, player_name, team, total_games,
+    total_points, total_rebounds, total_assists, total_steals, total_blocks,
+    total_fouls, total_turnovers,
+    total_fgm, total_fga, total_3pm, total_3pa, total_ftm, total_fta,
+    fg_percentage, three_percentage, ft_percentage,
+    squadid, createdat, updatedat
+  )
+  SELECT
+    gen_random_uuid()::text, gen_random_uuid()::text, p.name, MAX(p.team),
+    COUNT(DISTINCT p."gameId"),
+    SUM(p.points), SUM(p.rebounds), SUM(p.assists), SUM(p.steals), SUM(p.blocks),
+    SUM(p.fouls), SUM(p.turnovers),
+    SUM(p."fgMade"), SUM(p."fgAttempted"), SUM(p."threeMade"), SUM(p."threeAttempted"),
+    SUM(p."ftMade"), SUM(p."ftAttempted"),
+    CASE WHEN SUM(p."fgAttempted") > 0
+      THEN ROUND(SUM(p."fgMade")::numeric / SUM(p."fgAttempted") * 100, 2) ELSE 0 END,
+    CASE WHEN SUM(p."threeAttempted") > 0
+      THEN ROUND(SUM(p."threeMade")::numeric / SUM(p."threeAttempted") * 100, 2) ELSE 0 END,
+    CASE WHEN SUM(p."ftAttempted") > 0
+      THEN ROUND(SUM(p."ftMade")::numeric / SUM(p."ftAttempted") * 100, 2) ELSE 0 END,
+    $1, NOW(), NOW()
+  FROM players p
+  WHERE p."squadId" = $1
+    AND p.name IN (SELECT DISTINCT "displayName" FROM player_mappings WHERE "squadId" = $1)
+  GROUP BY p.name
+`;
+
 const SCREENSHOT_BUCKET = 'screenshots';
 // Signed-URL lifetime when serving a screenshot for viewing. Minted fresh on
 // every read, so short is fine — this is not what's persisted in the DB.
@@ -140,13 +173,18 @@ export class SupabaseService {
   }
 
   // Database Methods using direct PostgreSQL connection
-  async createLocalUser(userData: { email: string; name: string | null; passwordHash: string }) {
+  // Accepts a transaction client so signup can create the user and their personal squad
+  // atomically — a user without a personal squad has no resolvable scope.
+  async createLocalUser(
+    userData: { email: string; name: string | null; passwordHash: string },
+    db: Queryable = pgClient,
+  ) {
     const query = `
       INSERT INTO users (id, email, name, role, "passwordHash", "createdAt", "updatedAt")
       VALUES (gen_random_uuid()::text, LOWER($1), $2, 'USER', $3, NOW(), NOW())
       RETURNING *
     `;
-    const result = await pgClient.query(query, [userData.email, userData.name, userData.passwordHash]);
+    const result = await db.query(query, [userData.email, userData.name, userData.passwordHash]);
     return result.rows[0];
   }
 
@@ -167,10 +205,12 @@ export class SupabaseService {
     );
   }
 
-  async getGameHashesByUserId(userId: string): Promise<string[]> {
+  // Squad-scoped: every member's uploads share one hash pool, so the same screenshot
+  // uploaded by a second member is recognised as a duplicate.
+  async getGameHashesBySquadId(squadId: string): Promise<string[]> {
     const result = await pgClient.query(
-      `SELECT "imageHash" FROM games WHERE "userId" = $1 AND "imageHash" IS NOT NULL`,
-      [userId],
+      `SELECT "imageHash" FROM games WHERE "squadId" = $1 AND "imageHash" IS NOT NULL`,
+      [squadId],
     );
     return result.rows.map((row: any) => row.imageHash as string);
   }
@@ -178,8 +218,8 @@ export class SupabaseService {
   async createGame(gameData: any, db: Queryable = pgClient) {
     try {
       const query = `
-        INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "userId")
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10)
+        INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "squadId", "uploadedByUserId")
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW(), $10, $11)
         RETURNING *
       `;
       const values = [
@@ -192,7 +232,8 @@ export class SupabaseService {
         gameData.screenshotUrl || null,
         gameData.imageHash || null,
         gameData.processed || false,
-        gameData.userId
+        gameData.squadId,
+        gameData.uploadedByUserId
       ];
 
       const result = await db.query(query, values);
@@ -210,7 +251,7 @@ export class SupabaseService {
           id, "gameId", name, team, position, points, rebounds, assists, steals, blocks,
           turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
           "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage",
-          "teammateGrade", "playerId", "gameIdFromFile", "createdAt", "updatedAt", "userId"
+          "teammateGrade", "playerId", "gameIdFromFile", "createdAt", "updatedAt", "squadId"
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), NOW(), $25)
         RETURNING *
@@ -240,7 +281,7 @@ export class SupabaseService {
         playerData.teammateGrade || null,
         playerData.playerId || null,
         playerData.gameIdFromFile || null,
-        playerData.userId
+        playerData.squadId
       ];
 
       const result = await db.query(query, values);
@@ -257,7 +298,7 @@ export class SupabaseService {
         INSERT INTO teams (
           id, "gameId", name, "isHome", points, rebounds, assists, steals, blocks,
           turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
-          "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage", "createdAt", "updatedAt", "userId"
+          "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage", "createdAt", "updatedAt", "squadId"
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), NOW(), $21)
         RETURNING *
@@ -283,7 +324,7 @@ export class SupabaseService {
         teamData.fg_percentage || 0.00,
         teamData.three_percentage || 0.00,
         teamData.ft_percentage || 0.00,
-        teamData.userId
+        teamData.squadId
       ];
 
       const result = await db.query(query, values);
@@ -334,7 +375,7 @@ export class SupabaseService {
           "avgThreePercentage", "avgFtPercentage", "avgPlusMinus", "totalPoints",
           "totalRebounds", "totalAssists", "totalSteals", "totalBlocks", "totalTurnovers",
           "totalFouls",           "totalfgmade", "totalfgattempted", "totalthreemade", "totalthreeattempted",
-          "totalftmade", "totalftattempted", "createdAt", "updatedAt", "userId"
+          "totalftmade", "totalftattempted", "createdAt", "updatedAt", "squadId"
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW(), NOW(), $29)
         RETURNING *
@@ -356,7 +397,7 @@ export class SupabaseService {
         statsData.fgMade || 0, statsData.fgAttempted || 0,
         statsData.threeMade || 0, statsData.threeAttempted || 0,
         statsData.ftMade || 0, statsData.ftAttempted || 0,
-        statsData.userId
+        statsData.squadId
       ];
       
       const result = await pgClient.query(query, values);
@@ -367,14 +408,14 @@ export class SupabaseService {
     }
   }
 
-  async getPlayerStatsByPlayerName(playerName: string, userId: string) {
+  async getPlayerStatsByPlayerName(playerName: string, squadId: string) {
     try {
       const query = `
-        SELECT * FROM player_stats 
-        WHERE "playerName" = $1 AND "userId" = $2
+        SELECT * FROM player_stats
+        WHERE "playerName" = $1 AND "squadId" = $2
       `;
-      
-      const result = await pgClient.query(query, [playerName, userId]);
+
+      const result = await pgClient.query(query, [playerName, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats by name');
@@ -382,7 +423,7 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStats(playerName: string, userId: string, updateData: any) {
+  async updatePlayerStats(playerName: string, squadId: string, updateData: any) {
     try {
       const query = `
         UPDATE player_stats 
@@ -412,7 +453,7 @@ export class SupabaseService {
           "totalftmade" = $23,
           "totalftattempted" = $24,
           "updatedAt" = NOW()
-        WHERE "playerName" = $25 AND "userId" = $26
+        WHERE "playerName" = $25 AND "squadId" = $26
         RETURNING *
       `;
       
@@ -442,9 +483,9 @@ export class SupabaseService {
         updateData.totalFtMade,
         updateData.totalFtAttempted,
         playerName,
-        userId
+        squadId
       ];
-      
+
       const result = await pgClient.query(query, values);
       return result.rows[0];
     } catch (error) {
@@ -453,15 +494,15 @@ export class SupabaseService {
     }
   }
 
-  async getPlayerStats(userId: string) {
+  async getPlayerStats(squadId: string) {
     try {
       const query = `
-        SELECT * FROM player_stats 
-        WHERE "userId" = $1
+        SELECT * FROM player_stats
+        WHERE "squadId" = $1
         ORDER BY "totalPoints" DESC
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await pgClient.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats');
@@ -469,20 +510,20 @@ export class SupabaseService {
     }
   }
 
-  async getGamesByUserId(userId: string) {
+  async getGamesBySquadId(squadId: string) {
     try {
       const query = `
-        SELECT g.*, 
+        SELECT g.*,
                json_agg(DISTINCT p.*) as players,
                json_agg(DISTINCT t.*) as teams
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
-        WHERE g."userId" = $1
+        WHERE g."squadId" = $1
         GROUP BY g.id
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await pgClient.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting games by user ID');
@@ -490,18 +531,18 @@ export class SupabaseService {
     }
   }
 
-  async getDistinctPlayerCount(userId: string): Promise<number> {
+  async getDistinctPlayerCount(squadId: string): Promise<number> {
     try {
       // Count distinct players by their name column (normalized to handle case/whitespace differences)
       const query = `
         SELECT COUNT(DISTINCT LOWER(TRIM(name))) as distinct_players
         FROM players
-        WHERE "userId" = $1 
-          AND name IS NOT NULL 
+        WHERE "squadId" = $1
+          AND name IS NOT NULL
           AND TRIM(name) != ''
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await pgClient.query(query, [squadId]);
       const count = parseInt(result.rows[0]?.distinct_players || '0', 10);
       return count;
     } catch (error) {
@@ -510,16 +551,16 @@ export class SupabaseService {
     }
   }
 
-  async getGameByScreenshotUrl(screenshotUrl: string, userId: string) {
+  async getGameByScreenshotUrl(screenshotUrl: string, squadId: string) {
     try {
       const query = `
-        SELECT * FROM games 
-        WHERE "screenshotUrl" = $1 AND "userId" = $2
+        SELECT * FROM games
+        WHERE "screenshotUrl" = $1 AND "squadId" = $2
         ORDER BY "createdAt" DESC
         LIMIT 1
       `;
-      
-      const result = await pgClient.query(query, [screenshotUrl, userId]);
+
+      const result = await pgClient.query(query, [screenshotUrl, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       // Must NOT return null here: the caller reads null as "no existing game" and saves a
@@ -530,14 +571,14 @@ export class SupabaseService {
   }
 
   // Player Totals Methods
-  async getPlayerTotalsByPlayerName(playerName: string, userId: string) {
+  async getPlayerTotalsByPlayerName(playerName: string, squadId: string) {
     try {
       const query = `
-        SELECT * FROM player_totals 
-        WHERE player_name = $1 AND userid = $2
+        SELECT * FROM player_totals
+        WHERE player_name = $1 AND squadid = $2
       `;
-      
-      const result = await pgClient.query(query, [playerName, userId]);
+
+      const result = await pgClient.query(query, [playerName, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       // Must NOT return null here: the caller reads null as "no totals yet" and INSERTs a
@@ -547,15 +588,15 @@ export class SupabaseService {
     }
   }
 
-  async getPlayerTotalsByUserId(userId: string) {
+  async getPlayerTotalsBySquadId(squadId: string) {
     try {
       const query = `
-        SELECT * FROM player_totals 
-        WHERE userid = $1
+        SELECT * FROM player_totals
+        WHERE squadid = $1
         ORDER BY player_name
       `;
-      
-      const result = await pgClient.query(query, [userId]);
+
+      const result = await pgClient.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player totals by user ID');
@@ -563,7 +604,7 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerTotals(playerName: string, userId: string, updateData: any) {
+  async updatePlayerTotals(playerName: string, squadId: string, updateData: any) {
     try {
       const query = `
         UPDATE player_totals 
@@ -586,7 +627,7 @@ export class SupabaseService {
           three_percentage = $16,
           ft_percentage = $17,
           updatedat = NOW()
-        WHERE player_name = $18 AND userid = $19
+        WHERE player_name = $18 AND squadid = $19
         RETURNING *
       `;
       
@@ -609,7 +650,7 @@ export class SupabaseService {
         updateData.three_percentage,
         updateData.ft_percentage,
         playerName,
-        userId
+        squadId
       ];
       
       const result = await pgClient.query(query, values);
@@ -627,7 +668,7 @@ export class SupabaseService {
           id, player_id, player_name, team, total_games, total_points, total_assists,
           total_rebounds, total_steals, total_blocks, total_fouls, total_turnovers,
           total_fgm, total_fga, total_3pm, total_3pa, total_ftm, total_fta,
-          fg_percentage, three_percentage, ft_percentage, createdat, updatedat, userid
+          fg_percentage, three_percentage, ft_percentage, createdat, updatedat, squadid
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, NOW(), NOW(), $22)
         RETURNING *
@@ -654,7 +695,7 @@ export class SupabaseService {
         totalsData.fg_percentage || 0.00,
         totalsData.three_percentage || 0.00,
         totalsData.ft_percentage || 0.00,
-        totalsData.userid
+        totalsData.squadid
       ];
       
       const result = await pgClient.query(query, values);
@@ -665,7 +706,7 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStatsFromTotals(userId: string, allowedNames: string[], db: Queryable = pgClient) {
+  async updatePlayerStatsFromTotals(squadId: string, allowedNames: string[], db: Queryable = pgClient) {
     if (allowedNames.length === 0) return { rowCount: 0 };
     try {
       const query = `
@@ -694,7 +735,7 @@ export class SupabaseService {
           "totalFouls",
           "createdAt",
           "updatedAt",
-          "userId",
+          "squadId",
           "totalfgmade",
           "totalfgattempted",
           "totalthreemade",
@@ -755,7 +796,7 @@ export class SupabaseService {
           pt.total_fouls as "totalFouls",
           CURRENT_TIMESTAMP as "createdAt",
           CURRENT_TIMESTAMP as "updatedAt",
-          pt.userid as "userId",
+          pt.squadid as "squadId",
           pt.total_fgm as "totalfgmade",
           pt.total_fga as "totalfgattempted",
           pt.total_3pm as "totalthreemade",
@@ -764,8 +805,8 @@ export class SupabaseService {
           pt.total_fta as "totalftattempted"
         FROM public.player_totals pt
         WHERE pt.player_name = ANY($2)
-        AND pt.userid = $1
-        ON CONFLICT ("playerName", "userId")
+        AND pt.squadid = $1
+        ON CONFLICT ("playerName", "squadId")
         DO UPDATE SET
           team = EXCLUDED.team,
           "gamesPlayed" = EXCLUDED."gamesPlayed",
@@ -795,7 +836,7 @@ export class SupabaseService {
           "updatedAt" = CURRENT_TIMESTAMP
       `;
 
-      const result = await db.query(query, [userId, allowedNames]);
+      const result = await db.query(query, [squadId, allowedNames]);
       return result;
     } catch (error) {
       logger.error({ err: error }, 'Error running bulk update of player_stats from player_totals');
@@ -803,468 +844,189 @@ export class SupabaseService {
     }
   }
 
-  async startGameEdit(gameId: string, userId: string, allowedNames: string[]) {
-    const client = await pgPool.connect();
-    // Local alias: every inline `pgClient.query` below runs on this dedicated
-    // transaction client, not the shared pool.
-    const pgClient = client;
-    try {
-      await pgClient.query('BEGIN');
+  /**
+   * Rebuilds a squad's aggregates from its per-game `players` rows.
+   *
+   * Replaces the previous incremental delta logic, which only ever ADDED: there was no
+   * decrement path, so moving or deleting a game left that scope's totals overstated.
+   * The old `startGameEdit` (removed with this change) subtracted a game's stats up front
+   * with no way to restore them if the edit was abandoned, and double-subtracted when the
+   * edit did complete. A full rebuild is idempotent and provably matches the source rows —
+   * verified against production, where rebuilding reproduced the stored totals for all
+   * 8 tracked players exactly.
+   *
+   * Scoped to ONE squad. NOTE: scripts/import-labeled-data.ts deletes these tables with no
+   * WHERE clause; that is only safe for a single-user import and must never be copied here.
+   */
+  async recomputeSquadAggregates(squadId: string, db: Queryable = pgClient) {
+    await db.query('DELETE FROM player_stats WHERE "squadId" = $1', [squadId]);
+    await db.query('DELETE FROM player_totals WHERE squadid = $1', [squadId]);
+    await db.query(RECOMPUTE_TOTALS_SQL, [squadId]);
 
-      // Get the current game data (owner-scoped)
-      const currentGameQuery = `
-        SELECT g.*, json_agg(p.*) as players
-        FROM games g
-        LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1 AND g."userId" = $2
-        GROUP BY g.id
-      `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
-      const currentGame = currentGameResult.rows[0];
-
-      if (!currentGame) {
-        await pgClient.query('ROLLBACK');
-        return null;
-      }
-
-      // Players tracked for totals: the user's mapped display names
-      const trackedPlayers = allowedNames;
-
-      // Get current player totals for tracked players
-      const currentTotalsQuery = `
-        SELECT * FROM player_totals
-        WHERE player_name = ANY($1) AND userid = $2
-      `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
-      const currentTotals = currentTotalsResult.rows;
-
-      // Create a map of current totals by player name
-      const totalsMap = new Map();
-      currentTotals.forEach((total: any) => {
-        totalsMap.set(total.player_name, total);
-      });
-
-      // For each tracked player, subtract current values from totals
-      const currentPlayers = currentGame.players || [];
-      
-      for (const playerName of trackedPlayers) {
-        const currentPlayer = currentPlayers.find((p: any) => p.name === playerName);
-        
-        if (currentPlayer) {
-          const currentTotal = totalsMap.get(playerName);
-          
-          if (currentTotal) {
-            // Subtract current game values from totals
-            const updatedTotal = {
-              total_games: currentTotal.total_games - 1, // Decrease game count
-              total_points: currentTotal.total_points - (currentPlayer.points || 0),
-              total_rebounds: currentTotal.total_rebounds - (currentPlayer.rebounds || 0),
-              total_assists: currentTotal.total_assists - (currentPlayer.assists || 0),
-              total_steals: currentTotal.total_steals - (currentPlayer.steals || 0),
-              total_blocks: currentTotal.total_blocks - (currentPlayer.blocks || 0),
-              total_fouls: currentTotal.total_fouls - (currentPlayer.fouls || 0),
-              total_turnovers: currentTotal.total_turnovers - (currentPlayer.turnovers || 0),
-              total_fgm: currentTotal.total_fgm - (currentPlayer.fgMade || 0),
-              total_fga: currentTotal.total_fga - (currentPlayer.fgAttempted || 0),
-              total_3pm: currentTotal.total_3pm - (currentPlayer.threeMade || 0),
-              total_3pa: currentTotal.total_3pa - (currentPlayer.threeAttempted || 0),
-              total_ftm: currentTotal.total_ftm - (currentPlayer.ftMade || 0),
-              total_fta: currentTotal.total_fta - (currentPlayer.ftAttempted || 0),
-              fg_percentage: 0,
-              three_percentage: 0,
-              ft_percentage: 0
-            } as any;
-
-            // Recalculate percentages
-            updatedTotal.fg_percentage = updatedTotal.total_fga > 0 ? 
-              Math.round((updatedTotal.total_fgm / updatedTotal.total_fga) * 1000) / 10 : 0;
-            updatedTotal.three_percentage = updatedTotal.total_3pa > 0 ? 
-              Math.round((updatedTotal.total_3pm / updatedTotal.total_3pa) * 1000) / 10 : 0;
-            updatedTotal.ft_percentage = updatedTotal.total_fta > 0 ? 
-              Math.round((updatedTotal.total_ftm / updatedTotal.total_fta) * 1000) / 10 : 0;
-
-            // Update the player totals
-            const updateTotalQuery = `
-              UPDATE player_totals 
-              SET 
-                total_games = $1,
-                total_points = $2, total_rebounds = $3, total_assists = $4, total_steals = $5,
-                total_blocks = $6, total_fouls = $7, total_turnovers = $8, total_fgm = $9,
-                total_fga = $10, total_3pm = $11, total_3pa = $12, total_ftm = $13,
-                total_fta = $14, fg_percentage = $15, three_percentage = $16, ft_percentage = $17,
-                updatedat = NOW()
-              WHERE player_name = $18 AND userid = $19
-            `;
-            
-            await pgClient.query(updateTotalQuery, [
-              updatedTotal.total_games,
-              updatedTotal.total_points, updatedTotal.total_rebounds, updatedTotal.total_assists,
-              updatedTotal.total_steals, updatedTotal.total_blocks, updatedTotal.total_fouls,
-              updatedTotal.total_turnovers, updatedTotal.total_fgm, updatedTotal.total_fga,
-              updatedTotal.total_3pm, updatedTotal.total_3pa, updatedTotal.total_ftm,
-              updatedTotal.total_fta, updatedTotal.fg_percentage, updatedTotal.three_percentage,
-              updatedTotal.ft_percentage, playerName, currentGame.userId
-            ]);
-          }
-        }
-      }
-
-      // Commit the transaction
-      await pgClient.query('COMMIT');
-      
-      return { success: true, message: 'Game edit started, totals subtracted' };
-    } catch (error) {
-      // Rollback on error
-      await pgClient.query('ROLLBACK');
-      logger.error({ err: error }, 'Error starting game edit');
-      throw error;
-    } finally {
-      client.release();
+    // Only mapped display names accrue stats (see mappingService.getAllowedNamesForSquad).
+    const allowed = await db.query<{ displayName: string }>(
+      'SELECT DISTINCT "displayName" FROM player_mappings WHERE "squadId" = $1',
+      [squadId],
+    );
+    const allowedNames = allowed.rows.map((r) => r.displayName);
+    if (allowedNames.length > 0) {
+      await this.updatePlayerStatsFromTotals(squadId, allowedNames, db);
     }
+    return { players: allowedNames.length };
   }
 
-  async updateGame(gameId: string, userId: string, allowedNames: string[], updateData: any) {
+  async updateGame(gameId: string, squadId: string, updateData: any) {
     const client = await pgPool.connect();
-    // Local alias: every inline `pgClient.query` below runs on this dedicated
-    // transaction client, not the shared pool.
-    const pgClient = client;
     try {
-      await pgClient.query('BEGIN');
+      await client.query('BEGIN');
 
-      // First, get the current game data to see what we're replacing (owner-scoped)
-      const currentGameQuery = `
-        SELECT g.*, json_agg(p.*) as players
-        FROM games g
-        LEFT JOIN players p ON g.id = p."gameId"
-        WHERE g.id = $1 AND g."userId" = $2
-        GROUP BY g.id
-      `;
-      const currentGameResult = await pgClient.query(currentGameQuery, [gameId, userId]);
-      const currentGame = currentGameResult.rows[0];
-
-      if (!currentGame) {
-        await pgClient.query('ROLLBACK');
+      // Scope check: a game belonging to another squad is invisible (404 at the route).
+      const currentGameResult = await client.query(
+        `SELECT g.* FROM games g WHERE g.id = $1 AND g."squadId" = $2`,
+        [gameId, squadId],
+      );
+      if (currentGameResult.rows.length === 0) {
+        await client.query('ROLLBACK');
         return null;
       }
 
-      // Players tracked for totals: the user's mapped display names
-      const trackedPlayers = allowedNames;
-
-      // Get current player totals for tracked players
-      const currentTotalsQuery = `
-        SELECT * FROM player_totals
-        WHERE player_name = ANY($1) AND userid = $2
-      `;
-      const currentTotalsResult = await pgClient.query(currentTotalsQuery, [trackedPlayers, userId]);
-      const currentTotals = currentTotalsResult.rows;
-
-      // Create a map of current totals by player name
-      const totalsMap = new Map();
-      currentTotals.forEach((total: any) => {
-        totalsMap.set(total.player_name, total);
-      });
-
-      // Calculate the differences for tracked players
-      const currentPlayers = currentGame.players || [];
-      const newPlayers = updateData.players;
-      
-      // For each tracked player, subtract old values and add new values
-      for (const playerName of trackedPlayers) {
-        const currentPlayer = currentPlayers.find((p: any) => p.name === playerName);
-        const newPlayer = newPlayers.find((p: any) => p.name === playerName);
-        
-        if (currentPlayer || newPlayer) {
-          const currentTotal = totalsMap.get(playerName);
-          
-          if (currentTotal) {
-            // Player exists in totals, update them
-            const oldValues = currentPlayer || {
-              points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0,
-              fouls: 0, turnovers: 0, fgMade: 0, fgAttempted: 0,
-              threeMade: 0, threeAttempted: 0, ftMade: 0, ftAttempted: 0
-            };
-            
-            const newValues = newPlayer || {
-              points: 0, rebounds: 0, assists: 0, steals: 0, blocks: 0,
-              fouls: 0, turnovers: 0, fgMade: 0, fgAttempted: 0,
-              threeMade: 0, threeAttempted: 0, ftMade: 0, ftAttempted: 0
-            };
-
-            // Calculate new totals: subtract old, add new
-            const updatedTotal = {
-              total_games: currentTotal.total_games, // Keep same game count
-              total_points: currentTotal.total_points - (oldValues.points || 0) + (newValues.points || 0),
-              total_rebounds: currentTotal.total_rebounds - (oldValues.rebounds || 0) + (newValues.rebounds || 0),
-              total_assists: currentTotal.total_assists - (oldValues.assists || 0) + (newValues.assists || 0),
-              total_steals: currentTotal.total_steals - (oldValues.steals || 0) + (newValues.steals || 0),
-              total_blocks: currentTotal.total_blocks - (oldValues.blocks || 0) + (newValues.blocks || 0),
-              total_fouls: currentTotal.total_fouls - (oldValues.fouls || 0) + (newValues.fouls || 0),
-              total_turnovers: currentTotal.total_turnovers - (oldValues.turnovers || 0) + (newValues.turnovers || 0),
-              total_fgm: currentTotal.total_fgm - (oldValues.fgMade || 0) + (newValues.fgMade || 0),
-              total_fga: currentTotal.total_fga - (oldValues.fgAttempted || 0) + (newValues.fgAttempted || 0),
-              total_3pm: currentTotal.total_3pm - (oldValues.threeMade || 0) + (newValues.threeMade || 0),
-              total_3pa: currentTotal.total_3pa - (oldValues.threeAttempted || 0) + (newValues.threeAttempted || 0),
-              total_ftm: currentTotal.total_ftm - (oldValues.ftMade || 0) + (newValues.ftMade || 0),
-              total_fta: currentTotal.total_fta - (oldValues.ftAttempted || 0) + (newValues.ftAttempted || 0),
-              fg_percentage: 0,
-              three_percentage: 0,
-              ft_percentage: 0
-            } as any;
-
-            // Calculate new percentages
-            updatedTotal.fg_percentage = updatedTotal.total_fga > 0 ? 
-              Math.round((updatedTotal.total_fgm / updatedTotal.total_fga) * 1000) / 10 : 0;
-            updatedTotal.three_percentage = updatedTotal.total_3pa > 0 ? 
-              Math.round((updatedTotal.total_3pm / updatedTotal.total_3pa) * 1000) / 10 : 0;
-            updatedTotal.ft_percentage = updatedTotal.total_fta > 0 ? 
-              Math.round((updatedTotal.total_ftm / updatedTotal.total_fta) * 1000) / 10 : 0;
-
-            // Update the player totals
-            const updateTotalQuery = `
-              UPDATE player_totals 
-              SET 
-                total_points = $1, total_rebounds = $2, total_assists = $3, total_steals = $4,
-                total_blocks = $5, total_fouls = $6, total_turnovers = $7, total_fgm = $8,
-                total_fga = $9, total_3pm = $10, total_3pa = $11, total_ftm = $12,
-                total_fta = $13, fg_percentage = $14, three_percentage = $15, ft_percentage = $16,
-                updatedat = NOW()
-              WHERE player_name = $17 AND userid = $18
-            `;
-            
-            await pgClient.query(updateTotalQuery, [
-              updatedTotal.total_points, updatedTotal.total_rebounds, updatedTotal.total_assists,
-              updatedTotal.total_steals, updatedTotal.total_blocks, updatedTotal.total_fouls,
-              updatedTotal.total_turnovers, updatedTotal.total_fgm, updatedTotal.total_fga,
-              updatedTotal.total_3pm, updatedTotal.total_3pa, updatedTotal.total_ftm,
-              updatedTotal.total_fta, updatedTotal.fg_percentage, updatedTotal.three_percentage,
-              updatedTotal.ft_percentage, playerName, currentGame.userId
-            ]);
-          }
-        }
-      }
-
-      // Update the game record
-      const updateGameQuery = `
-        UPDATE games 
-        SET 
-          "homeTeam" = $1,
-          "awayTeam" = $2,
-          "homeScore" = $3,
-          "awayScore" = $4,
-          "date" = $5,
-          "updatedAt" = NOW()
-        WHERE id = $6
-        RETURNING *
-      `;
-      
-      const gameValues = [
-        updateData.homeTeam,
-        updateData.awayTeam,
-        updateData.homeScore,
-        updateData.awayScore,
-        updateData.date,
-        gameId
-      ];
-      
-      const gameResult = await pgClient.query(updateGameQuery, gameValues);
-      
+      // Scope the WRITE as well as the read. The previous version updated `WHERE id = $6`
+      // with no guard of its own, relying entirely on the SELECT above.
+      // uploadedByUserId is deliberately never touched here: an edit by another member
+      // must not reassign authorship of the game.
+      const gameResult = await client.query(
+        `UPDATE games
+         SET "homeTeam" = $1, "awayTeam" = $2, "homeScore" = $3, "awayScore" = $4,
+             "date" = $5, "updatedAt" = NOW()
+         WHERE id = $6 AND "squadId" = $7
+         RETURNING *`,
+        [
+          updateData.homeTeam,
+          updateData.awayTeam,
+          updateData.homeScore,
+          updateData.awayScore,
+          updateData.date,
+          gameId,
+          squadId,
+        ],
+      );
       if (gameResult.rows.length === 0) {
-        await pgClient.query('ROLLBACK');
+        await client.query('ROLLBACK');
         return null;
       }
 
-      // Delete existing players for this game
-      await pgClient.query('DELETE FROM players WHERE "gameId" = $1', [gameId]);
+      // Replace this game's rows wholesale, then rebuild aggregates from them.
+      await client.query('DELETE FROM players WHERE "gameId" = $1', [gameId]);
+      await client.query('DELETE FROM teams WHERE "gameId" = $1', [gameId]);
 
-      // Note: player_totals table stores cumulative totals across games, not per-game totals
-      // No need to delete from player_totals when updating a game
+      // 2 dp, matching the save path. The old edit path used Math.round(x*1000)/10 (1 dp),
+      // so editing a game silently changed the precision of its stored percentages.
+      const pct = (made: number, att: number) =>
+        att > 0 ? Math.round((made / att) * 100 * 100) / 100 : 0;
 
-      // Delete existing teams for this game
-      await pgClient.query('DELETE FROM teams WHERE "gameId" = $1', [gameId]);
-
-      // Insert updated players
-      for (const player of updateData.players) {
-        const insertPlayerQuery = `
-          INSERT INTO players (
-            id, "gameId", name, team, "teammateGrade", points, rebounds, assists,
-            steals, blocks, fouls, turnovers, "fgMade", "fgAttempted", "threeMade",
-            "threeAttempted", "ftMade", "ftAttempted", "gameIdFromFile", "playerId", "position", "userId", "fg_percentage", "three_percentage", "ft_percentage", "createdAt", "updatedAt"
-          ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, NOW(), NOW()
-          )
-        `;
-        
-        const playerValues = [
-          player.id || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          gameId,
-          player.name,
-          player.team,
-          player.teammateGrade || '',
-          player.points || 0,
-          player.rebounds || 0,
-          player.assists || 0,
-          player.steals || 0,
-          player.blocks || 0,
-          player.fouls || 0,
-          player.turnovers || 0,
-          player.fgMade || 0,
-          player.fgAttempted || 0,
-          player.threeMade || 0,
-          player.threeAttempted || 0,
-          player.ftMade || 0,
-          player.ftAttempted || 0,
-          player.gameIdFromFile || gameId, // Use gameId as fallback
-          player.playerId || `${gameId}-${Math.random().toString(36).substr(2, 3)}`, // Generate player ID
-          player.position || 'Unknown', // Default position
-          updateData.userId || currentGame.userId, // userId
-          // Calculate percentages
-          (player.fgAttempted || 0) > 0 ? Math.round(((player.fgMade || 0) / (player.fgAttempted || 0)) * 1000) / 10 : 0,
-          (player.threeAttempted || 0) > 0 ? Math.round(((player.threeMade || 0) / (player.threeAttempted || 0)) * 1000) / 10 : 0,
-          (player.ftAttempted || 0) > 0 ? Math.round(((player.ftMade || 0) / (player.ftAttempted || 0)) * 1000) / 10 : 0
-        ];
-        
-        await pgClient.query(insertPlayerQuery, playerValues);
+      for (const player of updateData.players as any[]) {
+        await client.query(
+          `INSERT INTO players (
+             id, "gameId", name, team, "teammateGrade", points, rebounds, assists,
+             steals, blocks, fouls, turnovers, "fgMade", "fgAttempted", "threeMade",
+             "threeAttempted", "ftMade", "ftAttempted", "gameIdFromFile", "playerId",
+             "position", "squadId", "fg_percentage", "three_percentage", "ft_percentage",
+             "createdAt", "updatedAt"
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,NOW(),NOW())`,
+          [
+            player.id || `player_${randomUUID()}`,
+            gameId,
+            player.name,
+            player.team,
+            player.teammateGrade || '',
+            player.points || 0,
+            player.rebounds || 0,
+            player.assists || 0,
+            player.steals || 0,
+            player.blocks || 0,
+            player.fouls || 0,
+            player.turnovers || 0,
+            player.fgMade || 0,
+            player.fgAttempted || 0,
+            player.threeMade || 0,
+            player.threeAttempted || 0,
+            player.ftMade || 0,
+            player.ftAttempted || 0,
+            player.gameIdFromFile || gameId,
+            player.playerId || `${gameId}-${randomUUID().slice(0, 3)}`,
+            player.position || 'Unknown',
+            squadId,
+            pct(player.fgMade || 0, player.fgAttempted || 0),
+            pct(player.threeMade || 0, player.threeAttempted || 0),
+            pct(player.ftMade || 0, player.ftAttempted || 0),
+          ],
+        );
       }
 
-      // Note: player_totals table stores cumulative player statistics across games, not team totals
-      // Team totals for this specific game are handled by the teams table
-      // Individual player totals will be updated separately through the player_totals update logic
-
-      // Calculate and insert team totals for this game
-      const homeTeam = updateData.homeTeam;
-      const awayTeam = updateData.awayTeam;
-      
-      // Group players by team
-      const homePlayers = updateData.players.filter((p: any) => p.team === homeTeam);
-      const awayPlayers = updateData.players.filter((p: any) => p.team === awayTeam);
-
-      // Calculate home team totals
-      if (homePlayers.length > 0) {
-        const homeTotals = {
-          team: homeTeam,
-          totalPoints: homePlayers.reduce((sum: number, p: any) => sum + (p.points || 0), 0),
-          totalRebounds: homePlayers.reduce((sum: number, p: any) => sum + (p.rebounds || 0), 0),
-          totalAssists: homePlayers.reduce((sum: number, p: any) => sum + (p.assists || 0), 0),
-          totalSteals: homePlayers.reduce((sum: number, p: any) => sum + (p.steals || 0), 0),
-          totalBlocks: homePlayers.reduce((sum: number, p: any) => sum + (p.blocks || 0), 0),
-          totalFouls: homePlayers.reduce((sum: number, p: any) => sum + (p.fouls || 0), 0),
-          totalTurnovers: homePlayers.reduce((sum: number, p: any) => sum + (p.turnovers || 0), 0),
-          totalFgMade: homePlayers.reduce((sum: number, p: any) => sum + (p.fgMade || 0), 0),
-          totalFgAttempted: homePlayers.reduce((sum: number, p: any) => sum + (p.fgAttempted || 0), 0),
-          totalThreeMade: homePlayers.reduce((sum: number, p: any) => sum + (p.threeMade || 0), 0),
-          totalThreeAttempted: homePlayers.reduce((sum: number, p: any) => sum + (p.threeAttempted || 0), 0),
-          totalFtMade: homePlayers.reduce((sum: number, p: any) => sum + (p.ftMade || 0), 0),
-          totalFtAttempted: homePlayers.reduce((sum: number, p: any) => sum + (p.ftAttempted || 0), 0),
-        };
-
-        const insertHomeTeamQuery = `
-          INSERT INTO teams (
-            id, name, "isHome", points, rebounds, assists, steals, blocks,
-            turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
-            "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage",
-            "createdAt", "updatedAt", "gameId", "userId"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-        `;
-
-        const homeTeamValues = [
-          `team_${randomUUID()}_home`,
-          homeTotals.team,
-          true, // isHome
-          homeTotals.totalPoints,
-          homeTotals.totalRebounds,
-          homeTotals.totalAssists,
-          homeTotals.totalSteals,
-          homeTotals.totalBlocks,
-          homeTotals.totalTurnovers,
-          homeTotals.totalFouls,
-          homeTotals.totalFgMade,
-          homeTotals.totalFgAttempted,
-          homeTotals.totalThreeMade,
-          homeTotals.totalThreeAttempted,
-          homeTotals.totalFtMade,
-          homeTotals.totalFtAttempted,
-          homeTotals.totalFgAttempted > 0 ? Math.round((homeTotals.totalFgMade / homeTotals.totalFgAttempted) * 1000) / 10 : 0,
-          homeTotals.totalThreeAttempted > 0 ? Math.round((homeTotals.totalThreeMade / homeTotals.totalThreeAttempted) * 1000) / 10 : 0,
-          homeTotals.totalFtAttempted > 0 ? Math.round((homeTotals.totalFtMade / homeTotals.totalFtAttempted) * 1000) / 10 : 0,
-          new Date().toISOString(), // createdAt
-          new Date().toISOString(), // updatedAt
-          gameId,
-          updateData.userId || currentGame.userId
-        ];
-
-        await pgClient.query(insertHomeTeamQuery, homeTeamValues);
+      // Both team rows are rebuilt unconditionally. The previous version inserted a side
+      // only `if (homePlayers.length > 0)`, matching players to the team by exact string
+      // equality — so an edit that changed team naming DELETEd both rows and inserted
+      // neither, silently losing the game's team records.
+      const sides: Array<{ name: string; isHome: boolean; score: number }> = [
+        { name: updateData.homeTeam, isHome: true, score: updateData.homeScore },
+        { name: updateData.awayTeam, isHome: false, score: updateData.awayScore },
+      ];
+      for (const side of sides) {
+        const members = (updateData.players as any[]).filter((p) => p.team === side.name);
+        const sum = (k: string) => members.reduce((acc: number, p: any) => acc + (p[k] || 0), 0);
+        const fgm = sum('fgMade');
+        const fga = sum('fgAttempted');
+        const tpm = sum('threeMade');
+        const tpa = sum('threeAttempted');
+        const ftm = sum('ftMade');
+        const fta = sum('ftAttempted');
+        await client.query(
+          `INSERT INTO teams (
+             id, name, "isHome", points, rebounds, assists, steals, blocks,
+             turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
+             "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage",
+             "createdAt", "updatedAt", "gameId", "squadId"
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW(),NOW(),$20,$21)`,
+          [
+            `team_${randomUUID()}_${side.isHome ? 'home' : 'away'}`,
+            side.name,
+            side.isHome,
+            side.score,
+            sum('rebounds'),
+            sum('assists'),
+            sum('steals'),
+            sum('blocks'),
+            sum('turnovers'),
+            sum('fouls'),
+            fgm,
+            fga,
+            tpm,
+            tpa,
+            ftm,
+            fta,
+            pct(fgm, fga),
+            pct(tpm, tpa),
+            pct(ftm, fta),
+            gameId,
+            squadId,
+          ],
+        );
       }
 
-      // Calculate away team totals
-      if (awayPlayers.length > 0) {
-        const awayTotals = {
-          team: awayTeam,
-          totalPoints: awayPlayers.reduce((sum: number, p: any) => sum + (p.points || 0), 0),
-          totalRebounds: awayPlayers.reduce((sum: number, p: any) => sum + (p.rebounds || 0), 0),
-          totalAssists: awayPlayers.reduce((sum: number, p: any) => sum + (p.assists || 0), 0),
-          totalSteals: awayPlayers.reduce((sum: number, p: any) => sum + (p.steals || 0), 0),
-          totalBlocks: awayPlayers.reduce((sum: number, p: any) => sum + (p.blocks || 0), 0),
-          totalFouls: awayPlayers.reduce((sum: number, p: any) => sum + (p.fouls || 0), 0),
-          totalTurnovers: awayPlayers.reduce((sum: number, p: any) => sum + (p.turnovers || 0), 0),
-          totalFgMade: awayPlayers.reduce((sum: number, p: any) => sum + (p.fgMade || 0), 0),
-          totalFgAttempted: awayPlayers.reduce((sum: number, p: any) => sum + (p.fgAttempted || 0), 0),
-          totalThreeMade: awayPlayers.reduce((sum: number, p: any) => sum + (p.threeMade || 0), 0),
-          totalThreeAttempted: awayPlayers.reduce((sum: number, p: any) => sum + (p.threeAttempted || 0), 0),
-          totalFtMade: awayPlayers.reduce((sum: number, p: any) => sum + (p.ftMade || 0), 0),
-          totalFtAttempted: awayPlayers.reduce((sum: number, p: any) => sum + (p.ftAttempted || 0), 0),
-        };
+      // Single aggregate path: rebuild from the rows just written, on this transaction
+      // client so it participates in the same transaction.
+      await this.recomputeSquadAggregates(squadId, client);
 
-        const insertAwayTeamQuery = `
-          INSERT INTO teams (
-            id, name, "isHome", points, rebounds, assists, steals, blocks,
-            turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
-            "ftMade", "ftAttempted", "fg_percentage", "three_percentage", "ft_percentage",
-            "createdAt", "updatedAt", "gameId", "userId"
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-        `;
+      await client.query('COMMIT');
 
-        const awayTeamValues = [
-          `team_${randomUUID()}_away`,
-          awayTotals.team,
-          false, // isHome
-          awayTotals.totalPoints,
-          awayTotals.totalRebounds,
-          awayTotals.totalAssists,
-          awayTotals.totalSteals,
-          awayTotals.totalBlocks,
-          awayTotals.totalTurnovers,
-          awayTotals.totalFouls,
-          awayTotals.totalFgMade,
-          awayTotals.totalFgAttempted,
-          awayTotals.totalThreeMade,
-          awayTotals.totalThreeAttempted,
-          awayTotals.totalFtMade,
-          awayTotals.totalFtAttempted,
-          awayTotals.totalFgAttempted > 0 ? Math.round((awayTotals.totalFgMade / awayTotals.totalFgAttempted) * 1000) / 10 : 0,
-          awayTotals.totalThreeAttempted > 0 ? Math.round((awayTotals.totalThreeMade / awayTotals.totalThreeAttempted) * 1000) / 10 : 0,
-          awayTotals.totalFtAttempted > 0 ? Math.round((awayTotals.totalFtMade / awayTotals.totalFtAttempted) * 1000) / 10 : 0,
-          new Date().toISOString(), // createdAt
-          new Date().toISOString(), // updatedAt
-          gameId,
-          updateData.userId || currentGame.userId
-        ];
-
-        await pgClient.query(insertAwayTeamQuery, awayTeamValues);
-      }
-
-      // Rebuild player_stats from player_totals for this user's tracked names,
-      // on the transaction client so it participates in this transaction.
-      await this.updatePlayerStatsFromTotals(userId, allowedNames, client);
-
-      // Commit the transaction
-      await pgClient.query('COMMIT');
-
-      // Return the updated game with players (post-commit read on the pool)
-      const updatedGame = await this.getGameById(gameId, userId);
-      return updatedGame;
+      // Post-commit read on the pool.
+      return await this.getGameById(gameId, squadId);
     } catch (error) {
-      // Rollback on error
-      await pgClient.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.error({ err: rollbackErr }, 'Rollback failed after game update error');
+      }
       logger.error({ err: error }, 'Error updating game');
       throw error;
     } finally {
@@ -1272,7 +1034,7 @@ export class SupabaseService {
     }
   }
 
-  async getGameById(gameId: string, userId: string) {
+  async getGameById(gameId: string, squadId: string) {
     try {
       const query = `
         SELECT g.*,
@@ -1281,11 +1043,11 @@ export class SupabaseService {
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
-        WHERE g.id = $1 AND g."userId" = $2
+        WHERE g.id = $1 AND g."squadId" = $2
         GROUP BY g.id
       `;
 
-      const result = await pgClient.query(query, [gameId, userId]);
+      const result = await pgClient.query(query, [gameId, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');

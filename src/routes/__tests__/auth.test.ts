@@ -10,6 +10,23 @@ jest.mock('@/services/supabase', () => ({
     findUserById: jest.fn(),
     updatePasswordHash: jest.fn(),
   },
+  // Signup wraps user creation and personal-squad creation in one transaction.
+  pgPool: {
+    connect: jest.fn().mockResolvedValue({
+      query: jest.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+      release: jest.fn(),
+    }),
+  },
+}));
+
+jest.mock('@/services/squadService', () => ({
+  __esModule: true,
+  createPersonalSquad: jest.fn().mockResolvedValue({
+    id: 'squad-personal-1',
+    name: 'Personal',
+    isPersonal: true,
+    createdByUserId: 'user-1',
+  }),
 }));
 
 import request from 'supertest';
@@ -71,7 +88,24 @@ describe('POST /signup', () => {
     expect(mocked.findUserByEmail).toHaveBeenCalledWith('new@example.com');
     expect(mocked.createLocalUser).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'new@example.com', name: 'New User' }),
+      expect.anything(), // transaction client
     );
+  });
+
+  it('creates the personal squad in the same transaction as the user', async () => {
+    // An account with no personal squad has no resolvable data scope, so the two must
+    // be created atomically — never one without the other.
+    const { createPersonalSquad } = jest.requireMock('@/services/squadService');
+    mocked.findUserByEmail.mockResolvedValue(null);
+    mocked.createLocalUser.mockResolvedValue({ ...mockUser, email: 'new@example.com' });
+
+    await request(app).post('/signup').send(validBody);
+
+    expect(createPersonalSquad).toHaveBeenCalledWith('user-1', expect.anything());
+    // Same client object passed to both = same transaction.
+    const userClient = mocked.createLocalUser.mock.calls[0]![1];
+    const squadClient = (createPersonalSquad as jest.Mock).mock.calls[0]![1];
+    expect(userClient).toBe(squadClient);
   });
 
   it('returns 403 for a wrong invite code', async () => {

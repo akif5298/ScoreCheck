@@ -32,15 +32,15 @@ jest.mock('@/services/enhancedOCRService', () => ({
 
 jest.mock('@/services/mappingService', () => ({
   __esModule: true,
-  getMappingsForUser: jest.fn().mockResolvedValue(new Map()),
-  getAllowedNamesForUser: jest.fn().mockResolvedValue(new Set()),
+  getMappingsForSquad: jest.fn().mockResolvedValue(new Map()),
+  getAllowedNamesForSquad: jest.fn().mockResolvedValue(new Set()),
   getAllowedNamesArray: jest.fn().mockResolvedValue([]),
 }));
 
 jest.mock('@/services/supabase', () => ({
   __esModule: true,
   default: {
-    getGameHashesByUserId: jest.fn().mockResolvedValue([]),
+    getGameHashesBySquadId: jest.fn().mockResolvedValue([]),
     getGameByScreenshotUrl: jest.fn().mockResolvedValue(null),
     uploadImage: jest.fn().mockResolvedValue('u1-1-boxscore.png'),
   },
@@ -52,6 +52,18 @@ jest.mock('@/middleware/auth', () => ({
     req.user = { userId: 'u1', email: 'test@example.com', role: 'USER' };
     next();
   },
+}));
+
+jest.mock('@/middleware/squad', () => ({
+  // Stands in for the DB-backed scope resolution; routes just need req.squadId set.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resolveSquad: (req: any, _res: any, next: any) => {
+    req.squadId = 'test-squad-1';
+    next();
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  requireSquadId: (req: any) => req.squadId,
+  SQUAD_HEADER: 'x-squad-id',
 }));
 
 import { assertExtractionHostReachable } from '@/services/ollamaExtractor';

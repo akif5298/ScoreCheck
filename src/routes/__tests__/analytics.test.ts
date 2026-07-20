@@ -1,7 +1,7 @@
 jest.mock('@/services/supabase', () => ({
   __esModule: true,
   default: {
-    getGamesByUserId: jest.fn(),
+    getGamesBySquadId: jest.fn(),
     getDistinctPlayerCount: jest.fn(),
     getPlayerStats: jest.fn(),
   },
@@ -14,7 +14,7 @@ jest.mock('@/services/lineupEfficiency', () => ({
 
 jest.mock('@/services/mappingService', () => ({
   __esModule: true,
-  getAllowedNamesForUser: jest.fn().mockResolvedValue(new Set(['Akif'])),
+  getAllowedNamesForSquad: jest.fn().mockResolvedValue(new Set(['Akif'])),
   getAllowedNamesArray: jest.fn().mockResolvedValue(['Akif']),
 }));
 
@@ -23,6 +23,18 @@ jest.mock('@/middleware/auth', () => ({
     req.user = { userId: 'user-1', email: 'user@example.com', role: 'USER' };
     next();
   }),
+}));
+
+jest.mock('@/middleware/squad', () => ({
+  // Stands in for the DB-backed scope resolution; routes just need req.squadId set.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  resolveSquad: (req: any, _res: any, next: any) => {
+    req.squadId = 'test-squad-1';
+    next();
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  requireSquadId: (req: any) => req.squadId,
+  SQUAD_HEADER: 'x-squad-id',
 }));
 
 import request from 'supertest';
@@ -106,7 +118,7 @@ beforeEach(() => {
     req.user = { userId: 'user-1', email: 'user@example.com', role: 'USER' };
     next();
   });
-  mockedSupabase.getGamesByUserId.mockResolvedValue([mockGame as any]);
+  mockedSupabase.getGamesBySquadId.mockResolvedValue([mockGame as any]);
   mockedSupabase.getPlayerStats.mockResolvedValue(mockPlayerStats as any);
   mockedSupabase.getDistinctPlayerCount.mockResolvedValue(1);
   mockedLineups.mockResolvedValue([]);
@@ -131,7 +143,7 @@ describe('GET /players', () => {
   });
 
   it('returns 500 when fetching games throws', async () => {
-    mockedSupabase.getGamesByUserId.mockRejectedValue(new Error('DB down'));
+    mockedSupabase.getGamesBySquadId.mockRejectedValue(new Error('DB down'));
 
     const res = await request(app).get('/players');
 
@@ -152,7 +164,7 @@ describe('GET /teams', () => {
   });
 
   it('returns 500 when fetching games throws', async () => {
-    mockedSupabase.getGamesByUserId.mockRejectedValue(new Error('DB down'));
+    mockedSupabase.getGamesBySquadId.mockRejectedValue(new Error('DB down'));
 
     const res = await request(app).get('/teams');
 

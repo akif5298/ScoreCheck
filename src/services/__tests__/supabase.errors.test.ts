@@ -48,9 +48,9 @@ describe('SupabaseService read helpers — DB error propagation', () => {
     ['getPlayerTotalsByPlayerName', () => supabaseService.getPlayerTotalsByPlayerName('Akif', 'u1')],
     ['getPlayerStatsByPlayerName', () => supabaseService.getPlayerStatsByPlayerName('Akif', 'u1')],
     ['getGameById', () => supabaseService.getGameById('game-1', 'u1')],
-    ['getGamesByUserId', () => supabaseService.getGamesByUserId('u1')],
+    ['getGamesBySquadId', () => supabaseService.getGamesBySquadId('u1')],
     ['getPlayerStats', () => supabaseService.getPlayerStats('u1')],
-    ['getPlayerTotalsByUserId', () => supabaseService.getPlayerTotalsByUserId('u1')],
+    ['getPlayerTotalsBySquadId', () => supabaseService.getPlayerTotalsBySquadId('u1')],
     ['getDistinctPlayerCount', () => supabaseService.getDistinctPlayerCount('u1')],
   ];
 
@@ -63,6 +63,6 @@ describe('SupabaseService read helpers — DB error propagation', () => {
 
     await expect(supabaseService.getGameByScreenshotUrl('missing.jpg', 'u1')).resolves.toBeNull();
     await expect(supabaseService.getPlayerTotalsByPlayerName('Nobody', 'u1')).resolves.toBeNull();
-    await expect(supabaseService.getGamesByUserId('u1')).resolves.toEqual([]);
+    await expect(supabaseService.getGamesBySquadId('u1')).resolves.toEqual([]);
   });
 });

@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { authenticateToken } from '@/middleware/auth';
+import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { ApiResponse } from '@/types';
 import logger from '@/utils/logger';
 import {
-  listMappingsForUser,
+  listMappingsForSquad,
   createMapping,
   updateMapping,
   deleteMapping,
@@ -26,9 +27,9 @@ function validateFields(
   return null;
 }
 
-router.get('/', authenticateToken, async (req: Request, res: Response) => {
+router.get('/', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    const mappings = await listMappingsForUser(req.user!.userId);
+    const mappings = await listMappingsForSquad(requireSquadId(req));
     return res.json({ success: true, data: mappings } as ApiResponse);
   } catch (err) {
     logger.error({ err }, 'GET /api/mappings failed');
@@ -36,7 +37,7 @@ router.get('/', authenticateToken, async (req: Request, res: Response) => {
   }
 });
 
-router.post('/', authenticateToken, async (req: Request, res: Response) => {
+router.post('/', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   const { gamertag, displayName } = req.body as { gamertag?: string; displayName?: string };
   const validationError = validateFields(gamertag, displayName);
   if (validationError) {
@@ -45,10 +46,10 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
   try {
     const g = gamertag!.trim();
     const d = displayName!.trim();
-    const mapping = await createMapping(req.user!.userId, g, d);
+    const mapping = await createMapping(requireSquadId(req), g, d);
     let retroactiveCount = 0;
     try {
-      retroactiveCount = await applyRetroactiveMapping(req.user!.userId, g, d);
+      retroactiveCount = await applyRetroactiveMapping(requireSquadId(req), g, d);
     } catch (retroErr) {
       logger.error({ err: retroErr }, 'Retroactive rename failed after mapping create');
     }
@@ -62,7 +63,7 @@ router.post('/', authenticateToken, async (req: Request, res: Response) => {
   }
 });
 
-router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
+router.put('/:id', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   const id = req.params.id as string;
   const { gamertag, displayName } = req.body as { gamertag?: string; displayName?: string };
   const validationError = validateFields(gamertag, displayName);
@@ -72,12 +73,12 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
   try {
     const g = gamertag!.trim();
     const d = displayName!.trim();
-    const oldMapping = await getMappingById(id, req.user!.userId);
-    const mapping = await updateMapping(id, req.user!.userId, g, d);
+    const oldMapping = await getMappingById(id, requireSquadId(req));
+    const mapping = await updateMapping(id, requireSquadId(req), g, d);
     let retroactiveCount = 0;
     try {
       retroactiveCount = await applyRetroactiveMapping(
-        req.user!.userId, g, d, oldMapping?.displayName,
+        requireSquadId(req), g, d, oldMapping?.displayName,
       );
     } catch (retroErr) {
       logger.error({ err: retroErr }, 'Retroactive rename failed after mapping update');
@@ -95,10 +96,10 @@ router.put('/:id', authenticateToken, async (req: Request, res: Response) => {
   }
 });
 
-router.delete('/:id', authenticateToken, async (req: Request, res: Response) => {
+router.delete('/:id', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   const id = req.params.id as string;
   try {
-    await deleteMapping(id, req.user!.userId);
+    await deleteMapping(id, requireSquadId(req));
     return res.json({ success: true, data: null } as ApiResponse);
   } catch (err: unknown) {
     if ((err as any)?.status === 404) {

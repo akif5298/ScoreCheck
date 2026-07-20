@@ -1,15 +1,16 @@
 import { Router, Request, Response } from 'express';
 import supabaseService, { pgClient } from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
+import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { ApiResponse, AnalyticsData, PlayerStats } from '@/types';
 import logger from '@/utils/logger';
-import { getAllowedNamesForUser } from '@/services/mappingService';
+import { getAllowedNamesForSquad } from '@/services/mappingService';
 import { getLineupEfficiency } from '@/services/lineupEfficiency';
 
 const router = Router();
 
 // Get player statistics
-router.get('/players', authenticateToken, async (req: Request, res: Response) => {
+router.get('/players', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -19,15 +20,15 @@ router.get('/players', authenticateToken, async (req: Request, res: Response) =>
       return res.status(401).json(response);
     }
 
-    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const allPlayers = games.flatMap(game => game.players || []);
 
     // Filter players to the user's mapped display names
-    const allowedNames = await getAllowedNamesForUser(req.user.userId);
+    const allowedNames = await getAllowedNamesForSquad(requireSquadId(req));
     const players = allPlayers.filter(player => player.name && allowedNames.has(player.name));
 
     // Calculate aggregated statistics
-    const playerStats = await calculatePlayerStats(req.user.userId, allowedNames);
+    const playerStats = await calculatePlayerStats(requireSquadId(req), allowedNames);
 
     const response: ApiResponse<{ players: any[]; stats: PlayerStats[] }> = {
       success: true,
@@ -51,7 +52,7 @@ router.get('/players', authenticateToken, async (req: Request, res: Response) =>
 });
 
 // Get team statistics
-router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
+router.get('/teams', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -61,7 +62,7 @@ router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
       return res.status(401).json(response);
     }
 
-    const games = await supabaseService.getGamesByUserId(req.user.userId);
+    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const teams = games.map(game => ({
       name: game.homeTeam,
       points: game.homeScore,
@@ -73,7 +74,7 @@ router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
     })));
 
     // Calculate team statistics
-    const teamStats = await calculateTeamStats(req.user.userId);
+    const teamStats = await calculateTeamStats(requireSquadId(req));
 
     const response: ApiResponse<{ teams: any[]; stats: any[] }> = {
       success: true,
@@ -97,7 +98,7 @@ router.get('/teams', authenticateToken, async (req: Request, res: Response) => {
 });
 
 // Get comprehensive analytics dashboard
-router.get('/dashboard', authenticateToken, async (req: Request, res: Response) => {
+router.get('/dashboard', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = {
@@ -108,14 +109,14 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     }
 
     // Get recent games
-    const allGames = await supabaseService.getGamesByUserId(req.user.userId);
+    const allGames = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const recentGames = allGames.slice(0, 10);
 
     // Calculate totals for this user
     const totalGames = allGames.length;
     
     // Get distinct player count directly from database (more accurate)
-    const totalPlayers = await supabaseService.getDistinctPlayerCount(req.user.userId);
+    const totalPlayers = await supabaseService.getDistinctPlayerCount(requireSquadId(req));
     
     // Get unique teams across all games
     const allTeams = allGames.flatMap(game => game.teams || []);
@@ -123,11 +124,11 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     const totalTeams = uniqueTeamNames.size;
 
     // Get player statistics (scoped to the user's mapped display names)
-    const allowedNames = await getAllowedNamesForUser(req.user.userId);
-    const playerStats = await calculatePlayerStats(req.user.userId, allowedNames);
+    const allowedNames = await getAllowedNamesForSquad(requireSquadId(req));
+    const playerStats = await calculatePlayerStats(requireSquadId(req), allowedNames);
 
     // Get team statistics
-    const teamStats = await calculateTeamStats(req.user.userId);
+    const teamStats = await calculateTeamStats(requireSquadId(req));
 
     // Calculate average points between Team A and Team B
     const teamA = teamStats.find(team => team.name === 'Team A');
@@ -143,10 +144,10 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
     }
 
     // Get top performers
-    const topPerformers = await getTopPerformers(req.user.userId, allowedNames);
+    const topPerformers = await getTopPerformers(requireSquadId(req), allowedNames);
 
     // Get game highs
-    const gameHighs = await getGameHighs(req.user.userId, allowedNames);
+    const gameHighs = await getGameHighs(requireSquadId(req), allowedNames);
 
     const analyticsData: AnalyticsData = {
       totalGames,
@@ -179,13 +180,13 @@ router.get('/dashboard', authenticateToken, async (req: Request, res: Response) 
 });
 
 // Get lineup efficiency — groups of players by team, sorted by avg point differential
-router.get('/lineups', authenticateToken, async (req: Request, res: Response) => {
+router.get('/lineups', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     if (!req.user) {
       const response: ApiResponse = { success: false, error: 'User not authenticated' };
       return res.status(401).json(response);
     }
-    const lineups = await getLineupEfficiency(req.user.userId, pgClient);
+    const lineups = await getLineupEfficiency(requireSquadId(req), pgClient);
     const response: ApiResponse<{ lineups: typeof lineups }> = {
       success: true,
       data: { lineups },
@@ -200,12 +201,12 @@ router.get('/lineups', authenticateToken, async (req: Request, res: Response) =>
 
 // Helper function to calculate player statistics
 async function calculatePlayerStats(
-  userId: string,
+  squadId: string,
   allowedNames: Set<string>,
 ): Promise<PlayerStats[]> {
   try {
     // Use optimized player_stats table instead of calculating on-the-fly
-    const playerStats = await supabaseService.getPlayerStats(userId);
+    const playerStats = await supabaseService.getPlayerStats(squadId);
     
     // Transform the data to match the expected PlayerStats format
     return playerStats.map(stats => ({
@@ -233,11 +234,11 @@ async function calculatePlayerStats(
       totalFouls: stats.totalFouls,
       createdAt: stats.createdAt,
       updatedAt: stats.updatedAt,
-      userId: stats.userId,
+      squadId: stats.squadId,
     }));
   } catch (error) {
     logger.error({ err: error }, 'Error getting player stats from optimized table; falling back to on-the-fly calculation');
-    const games = await supabaseService.getGamesByUserId(userId);
+    const games = await supabaseService.getGamesBySquadId(squadId);
     const players = games.flatMap(game => game.players || []);
 
     const playerMap = new Map<string, PlayerStats>();
@@ -283,7 +284,7 @@ async function calculatePlayerStats(
           totalFouls: 0,
           createdAt: new Date(),
           updatedAt: new Date(),
-          userId,
+          squadId,
         });
       }
 
@@ -334,8 +335,8 @@ async function calculatePlayerStats(
 }
 
 // Helper function to calculate team statistics
-async function calculateTeamStats(userId: string): Promise<any[]> {
-  const games = await supabaseService.getGamesByUserId(userId);
+async function calculateTeamStats(squadId: string): Promise<any[]> {
+  const games = await supabaseService.getGamesBySquadId(squadId);
   
   const teamMap = new Map<string, any>();
 
@@ -498,10 +499,10 @@ async function calculateTeamStats(userId: string): Promise<any[]> {
 
 // Helper function to get top performers
 async function getTopPerformers(
-  userId: string,
+  squadId: string,
   allowedNames: Set<string>,
 ): Promise<{ points: PlayerStats[]; rebounds: PlayerStats[]; assists: PlayerStats[] }> {
-  const playerStats = await calculatePlayerStats(userId, allowedNames);
+  const playerStats = await calculatePlayerStats(squadId, allowedNames);
 
   return {
     points: playerStats
@@ -518,7 +519,7 @@ async function getTopPerformers(
 
 // Helper function to get game highs for various statistics
 async function getGameHighs(
-  userId: string,
+  squadId: string,
   allowedNames: Set<string>,
 ): Promise<{
   points: any[];
@@ -528,7 +529,7 @@ async function getGameHighs(
   blocks: any[];
   threeMade: any[];
 }> {
-  const games = await supabaseService.getGamesByUserId(userId);
+  const games = await supabaseService.getGamesBySquadId(squadId);
   const allPlayers = games.flatMap(game => game.players || []);
   
   // Filter to the user's mapped display names

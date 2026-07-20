@@ -67,7 +67,9 @@ export class EnhancedOCRService {
         createdAt: new Date(),
         updatedAt: new Date(),
         gameId: '',
-        userId: '',
+        // Placeholder: these rows are for the review UI and have no scope until /save
+        // assigns the caller's squad.
+        squadId: '',
       };
     });
 

@@ -13,6 +13,7 @@
     "start": "npx prisma migrate deploy && node dist/server/index.js",
     "assign-owner": "ts-node -r tsconfig-paths/register scripts/assign-data-owner.ts",
     "import:labeled": "ts-node -r tsconfig-paths/register scripts/import-labeled-data.ts",
+    "backfill:screenshots": "ts-node -r tsconfig-paths/register scripts/backfill-screenshots.ts",
     "db:migrate": "npx prisma migrate deploy",
     "db:generate": "npx prisma generate",
     "db:studio": "npx prisma studio",

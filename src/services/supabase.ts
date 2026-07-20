@@ -378,7 +378,7 @@ export class SupabaseService {
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats by name');
-      return null;
+      throw error;
     }
   }
 
@@ -465,7 +465,7 @@ export class SupabaseService {
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats');
-      return [];
+      throw error;
     }
   }
 
@@ -486,7 +486,7 @@ export class SupabaseService {
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting games by user ID');
-      return [];
+      throw error;
     }
   }
 
@@ -506,7 +506,7 @@ export class SupabaseService {
       return count;
     } catch (error) {
       logger.error({ err: error }, 'Error getting distinct player count');
-      return 0;
+      throw error;
     }
   }
 
@@ -522,8 +522,10 @@ export class SupabaseService {
       const result = await pgClient.query(query, [screenshotUrl, userId]);
       return result.rows[0] || null;
     } catch (error) {
+      // Must NOT return null here: the caller reads null as "no existing game" and saves a
+      // duplicate. A failed lookup has to fail the request, not masquerade as absence.
       logger.error({ err: error }, 'Error getting game by screenshot URL');
-      return null;
+      throw error;
     }
   }
 
@@ -538,8 +540,10 @@ export class SupabaseService {
       const result = await pgClient.query(query, [playerName, userId]);
       return result.rows[0] || null;
     } catch (error) {
+      // Must NOT return null here: the caller reads null as "no totals yet" and INSERTs a
+      // fresh row, corrupting the player's cumulative totals on a transient DB error.
       logger.error({ err: error }, 'Error getting player totals by name');
-      return null;
+      throw error;
     }
   }
 
@@ -555,7 +559,7 @@ export class SupabaseService {
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player totals by user ID');
-      return [];
+      throw error;
     }
   }
 
@@ -1285,7 +1289,7 @@ export class SupabaseService {
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');
-      return null;
+      throw error;
     }
   }
 }

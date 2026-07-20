@@ -34,6 +34,11 @@ jest.mock('@/services/squadService', () => {
   };
 });
 
+jest.mock('@/services/gameMoveService', () => ({
+  __esModule: true,
+  moveGamesToSquad: jest.fn(),
+}));
+
 jest.mock('@/middleware/auth', () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   authenticateToken: (req: any, _res: any, next: any) => {
@@ -48,6 +53,7 @@ import squadsRouter from '@/routes/squads';
 
 const svc = jest.requireMock('@/services/squadService');
 const { SquadError } = svc;
+const move = jest.requireMock('@/services/gameMoveService').moveGamesToSquad as jest.Mock;
 
 const app = express();
 app.use(express.json());
@@ -279,6 +285,121 @@ describe('roster identity', () => {
     const res = await request(app).post('/s2/roster/claim').send({ mappingId: 'm1' });
 
     expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /:squadId/games/move', () => {
+  const emptyResult = {
+    moved: [],
+    alreadyThere: [],
+    duplicates: [],
+    renamed: [],
+    conflicts: [],
+    unmapped: [],
+    lineupRewriteSkipped: [],
+  };
+
+  it('moves games into the squad named in the path', async () => {
+    move.mockResolvedValue({ ...emptyResult, moved: ['g1', 'g2'] });
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1', 'g2'] });
+
+    expect(res.status).toBe(200);
+    // The target is the path squad and the actor is the caller's own id — neither is
+    // taken from the body, so a client cannot move games on someone else's behalf.
+    expect(move).toHaveBeenCalledWith('user-me', 's2', ['g1', 'g2']);
+  });
+
+  it('deduplicates repeated game ids before calling the service', async () => {
+    move.mockResolvedValue({ ...emptyResult, moved: ['g1'] });
+
+    await request(app).post('/s2/games/move').send({ gameIds: ['g1', 'g1', 'g1'] });
+
+    expect(move).toHaveBeenCalledWith('user-me', 's2', ['g1']);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['empty array', []],
+    ['not an array', 'g1'],
+    ['containing a non-string', ['g1', 42]],
+    ['containing an empty string', ['g1', '  ']],
+  ])('returns 400 for gameIds %s without opening a transaction', async (_label, gameIds) => {
+    const res = await request(app).post('/s2/games/move').send({ gameIds });
+
+    expect(res.status).toBe(400);
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it('returns 400 for a batch over the cap', async () => {
+    const gameIds = Array.from({ length: 501 }, (_, i) => `g${i}`);
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds });
+
+    expect(res.status).toBe(400);
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the 403 for moving another member\'s game', async () => {
+    move.mockRejectedValue(
+      new SquadError(403, 'You can only move games you uploaded, unless you own the squad'),
+    );
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1'] });
+
+    expect(res.status).toBe(403);
+  });
+
+  it('surfaces 404 for a squad the caller is not in', async () => {
+    move.mockRejectedValue(new SquadError(404, 'Squad not found'));
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1'] });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('surfaces 409 when the move would merge two players', async () => {
+    move.mockRejectedValue(
+      new SquadError(409, 'Moving these games would merge two different players into Nil.'),
+    );
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1'] });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('reports duplicates and unmapped names in the message', async () => {
+    // The user needs the real outcome, not a bare success — unmapped names accrue no
+    // stats until they are put on the roster.
+    move.mockResolvedValue({
+      ...emptyResult,
+      moved: ['g1', 'g2'],
+      duplicates: [{ gameId: 'g3', existingGameId: 'g9' }],
+      unmapped: ['GRIM_AR15'],
+    });
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1', 'g2', 'g3'] });
+
+    expect(res.body.message).toMatch(/Moved 2 games/);
+    expect(res.body.message).toMatch(/1 were already in the squad/);
+    expect(res.body.message).toMatch(/1 name\(s\) are not on this squad's roster/);
+    expect(res.body.data.duplicates).toHaveLength(1);
+  });
+
+  it('returns the full per-game breakdown, not just a count', async () => {
+    move.mockResolvedValue({
+      ...emptyResult,
+      moved: ['g1'],
+      renamed: [{ from: 'Nillan', to: 'Nil' }],
+      conflicts: ['Dylan'],
+      lineupRewriteSkipped: ['g7'],
+    });
+
+    const res = await request(app).post('/s2/games/move').send({ gameIds: ['g1'] });
+
+    expect(res.body.data.renamed).toEqual([{ from: 'Nillan', to: 'Nil' }]);
+    expect(res.body.data.conflicts).toEqual(['Dylan']);
+    expect(res.body.data.lineupRewriteSkipped).toEqual(['g7']);
   });
 });
 

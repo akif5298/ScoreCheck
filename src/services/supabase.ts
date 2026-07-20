@@ -30,7 +30,11 @@ export class DuplicateGameError extends Error {
 
 // Arbitrary but fixed first key for squad-save advisory locks. Two-key form so these
 // locks share no space with any other advisory lock added later.
-const SQUAD_SAVE_LOCK_NAMESPACE = 0x5343;
+//
+// Exported because moving games between squads runs the same duplicate check against the
+// target squad and must serialise against concurrent saves into it. Both paths have to
+// take the lock in the SAME namespace or they would not exclude each other at all.
+export const SQUAD_SAVE_LOCK_NAMESPACE = 0x5343;
 
 // Load environment variables
 dotenv.config();

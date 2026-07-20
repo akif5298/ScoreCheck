@@ -66,6 +66,42 @@ export async function createPersonalSquad(
   return squad;
 }
 
+/**
+ * Copies the user's personal roster into a squad whose own roster is empty.
+ *
+ * Without this a newly created squad recognises nobody, so games moved into it show raw
+ * gamertags and accrue no stats until every mapping is re-entered by hand — which is
+ * exactly the bootstrap path, so the empty case is the common one rather than the edge.
+ *
+ * Guarded on a genuinely empty roster so it can never disturb an established squad, and
+ * ON CONFLICT DO NOTHING so a concurrent seed cannot turn squad creation into an error.
+ * linkedUserId is deliberately not copied: the identity link is per-squad and is claimed
+ * through the identify step, not inherited.
+ */
+export async function seedRosterFromPersonal(
+  userId: string,
+  squadId: string,
+  db: Queryable = pgClient,
+): Promise<number> {
+  const { rows: existing } = await db.query<{ n: string }>(
+    'SELECT COUNT(*) n FROM player_mappings WHERE "squadId" = $1',
+    [squadId],
+  );
+  if (Number(existing[0]?.n ?? 0) > 0) return 0;
+
+  const result = await db.query(
+    `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
+     SELECT gen_random_uuid()::text, $1, pm.gamertag, pm."displayName", NOW(), NOW()
+     FROM player_mappings pm
+     JOIN squads s ON s.id = pm."squadId"
+     WHERE s."createdByUserId" = $2 AND s."isPersonal" = true
+     ON CONFLICT DO NOTHING`,
+    [squadId, userId],
+  );
+
+  return result.rowCount ?? 0;
+}
+
 /** Creates a shared (non-personal) squad with the creator as OWNER. */
 export async function createSquad(userId: string, name: string): Promise<Squad> {
   const client = await pgPool.connect();
@@ -83,6 +119,7 @@ export async function createSquad(userId: string, name: string): Promise<Squad> 
        VALUES (gen_random_uuid()::text, $1, $2, 'OWNER', NOW())`,
       [squad.id, userId],
     );
+    await seedRosterFromPersonal(userId, squad.id, client);
     await client.query('COMMIT');
     return squad;
   } catch (error) {

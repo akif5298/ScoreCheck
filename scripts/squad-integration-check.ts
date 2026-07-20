@@ -30,6 +30,7 @@ import {
   claimRosterEntry,
   listSquadsForUser,
 } from '@/services/squadService';
+import { moveGamesToSquad } from '@/services/gameMoveService';
 
 let failures = 0;
 function check(label: string, actual: unknown, expected: unknown) {
@@ -86,6 +87,82 @@ async function makeGame(squadId: string, uploaderId: string): Promise<string> {
   );
   return id;
 }
+
+/**
+ * A game with realistic composite lineup names, so the move path's rewrite is exercised
+ * against the shape the join in lineupEfficiency.ts actually depends on:
+ * players.team must equal games."homeTeam" or games."awayTeam", exactly.
+ */
+async function makeRichGame(
+  squadId: string,
+  uploaderId: string,
+  opts: { player: string; imageHash?: string | null },
+): Promise<string> {
+  const id = `game_${randomUUID()}`;
+  const homeTeam = `${opts.player} (PG) + AI (SG)`;
+  const awayTeam = 'Random (PG) + Random (SG)';
+
+  await pgClient.query(
+    `INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore",
+       "screenshotUrl", processed, "createdAt", "updatedAt", "squadId", "uploadedByUserId", "imageHash")
+     VALUES ($1, NOW(), $4, $5, 95, 87, 'obj/x.jpg', true, NOW(), NOW(), $2, $3, $6)`,
+    [id, squadId, uploaderId, homeTeam, awayTeam, opts.imageHash ?? null],
+  );
+
+  for (const [name, playerId] of [
+    [opts.player, '1_1_A'],
+    ['AI Player', '1_2_A'],
+  ] as [string, string][]) {
+    await pgClient.query(
+      `INSERT INTO players (id, name, team, "gameIdFromFile", "playerId", position,
+         points, rebounds, assists, steals, blocks, fouls, turnovers,
+         "fgMade", "fgAttempted", "threeMade", "threeAttempted", "ftMade", "ftAttempted",
+         "createdAt", "updatedAt", "gameId", "squadId")
+       VALUES ($1,$4,$5,'1',$6,'PG',20,5,3,1,0,3,2,8,15,2,5,2,2,NOW(),NOW(),$2,$3)`,
+      [`player_${randomUUID()}`, id, squadId, name, homeTeam, playerId],
+    );
+  }
+
+  for (const [name, isHome] of [
+    [homeTeam, true],
+    [awayTeam, false],
+  ] as [string, boolean][]) {
+    await pgClient.query(
+      `INSERT INTO teams (id, name, "isHome", points, rebounds, assists, steals, blocks,
+         turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
+         "ftMade", "ftAttempted", "createdAt", "updatedAt", "gameId", "squadId")
+       VALUES ($1,$4,$5,95,40,20,5,3,10,15,35,70,8,20,17,20,NOW(),NOW(),$2,$3)`,
+      [`team_${randomUUID()}`, id, squadId, name, isHome],
+    );
+  }
+  return id;
+}
+
+/** A user plus their personal squad — the state signup actually produces. */
+async function makeUserWithPersonal(name: string): Promise<{ id: string; personalId: string }> {
+  const id = await makeUser(name);
+  const squad = await createPersonalSquad(id);
+  return { id, personalId: squad.id };
+}
+
+async function addMapping(squadId: string, gamertag: string, displayName: string): Promise<void> {
+  await pgClient.query(
+    `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
+     VALUES (gen_random_uuid()::text, $1, $2, $3, NOW(), NOW())`,
+    [squadId, gamertag, displayName],
+  );
+}
+
+const scalar = async (sql: string, params: unknown[] = []): Promise<any> =>
+  (await pgClient.query(sql, params as any[])).rows[0]?.v;
+
+/** The invariant the lineup join depends on. Must be 0 for every squad, always. */
+const orphanedLineups = (squadId: string) =>
+  scalar(
+    `SELECT COUNT(*)::int AS v FROM players p JOIN games g ON g.id = p."gameId"
+     WHERE p."squadId" = $1 AND p.team <> g."homeTeam" AND p.team <> g."awayTeam"`,
+    [squadId],
+  );
 
 const reset = () =>
   pgClient.query(
@@ -322,6 +399,221 @@ const reset = () =>
       'a nonexistent game → not_found',
       (await supabaseService.deleteGameForSquad('nope', squad.id, { userId: owner, isOwner: true })).outcome,
       'not_found',
+    );
+  }
+
+  // ── Phase 6: moving games between squads ───────────────────────────────────────
+  await reset();
+  {
+    const { id: owner, personalId: personal } = await makeUserWithPersonal('owner');
+    await addMapping(personal, 'GRIM_BuLLeTzZz', 'Nillan');
+
+    // createSquad seeds an empty roster from the creator's personal mappings, so the
+    // bootstrap case needs no renaming at all.
+    const squad = await createSquad(owner, 'Tuesday Run');
+    check(
+      'creating a squad seeds its roster from personal mappings',
+      await scalar('SELECT COUNT(*)::int AS v FROM player_mappings WHERE "squadId" = $1', [squad.id]),
+      1,
+    );
+
+    const g1 = await makeRichGame(personal, owner, { player: 'Nillan', imageHash: 'a'.repeat(60) });
+    const result = await moveGamesToSquad(owner, squad.id, [g1]);
+
+    check('moves the game', result.moved.length, 1);
+    check('  …game is re-scoped', await scalar('SELECT "squadId" AS v FROM games WHERE id = $1', [g1]), squad.id);
+    check(
+      '  …players are re-scoped',
+      await scalar('SELECT COUNT(*)::int AS v FROM players WHERE "gameId" = $1 AND "squadId" = $2', [g1, squad.id]),
+      2,
+    );
+    check(
+      '  …teams are re-scoped',
+      await scalar('SELECT COUNT(*)::int AS v FROM teams WHERE "gameId" = $1 AND "squadId" = $2', [g1, squad.id]),
+      2,
+    );
+    check('  …no rename needed (rosters agree)', result.renamed.length, 0);
+    check('  …lineup invariant holds in the target', await orphanedLineups(squad.id), 0);
+    check(
+      '  …source squad keeps no orphaned rows',
+      await scalar('SELECT COUNT(*)::int AS v FROM players WHERE "squadId" = $1', [personal]),
+      0,
+    );
+
+    // Re-running the same move is a no-op rather than an error.
+    const again = await moveGamesToSquad(owner, squad.id, [g1]);
+    check('re-moving an already-present game is a no-op', again.alreadyThere, [g1]);
+    check('  …and moves nothing', again.moved.length, 0);
+
+    // A perceptually identical screenshot already in the target is skipped, not duplicated.
+    const dup = await makeRichGame(personal, owner, { player: 'Nillan', imageHash: 'a'.repeat(60) });
+    const dupResult = await moveGamesToSquad(owner, squad.id, [dup]);
+    check('a duplicate screenshot is skipped', dupResult.duplicates.length, 1);
+    check('  …and stays in the source squad', await scalar('SELECT "squadId" AS v FROM games WHERE id = $1', [dup]), personal);
+  }
+
+  // ── Move: renaming through a shared gamertag ───────────────────────────────────
+  await reset();
+  {
+    const { id: owner, personalId: personal } = await makeUserWithPersonal('owner');
+    await addMapping(personal, 'GRIM_BuLLeTzZz', 'Nillan');
+
+    // A squad that already has its own roster is NOT seeded, so the two squads disagree
+    // about what to call the same gamertag — the case Phase 6 exists to reconcile.
+    const squad = await createSquad(owner, 'Other Group');
+    await pgClient.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
+    await addMapping(squad.id, 'GRIM_BuLLeTzZz', 'Nil');
+
+    const moving = await makeRichGame(personal, owner, { player: 'Nillan' });
+    const staying = await makeRichGame(personal, owner, { player: 'Nillan' });
+
+    const result = await moveGamesToSquad(owner, squad.id, [moving]);
+
+    check('renames through the shared gamertag', result.renamed, [{ from: 'Nillan', to: 'Nil' }]);
+    check(
+      '  …player row is renamed',
+      await scalar('SELECT COUNT(*)::int AS v FROM players WHERE "gameId" = $1 AND name = $2', [moving, 'Nil']),
+      1,
+    );
+    check(
+      '  …the composite lineup string is rewritten too',
+      await scalar('SELECT "homeTeam" AS v FROM games WHERE id = $1', [moving]),
+      'Nil (PG) + AI (SG)',
+    );
+    check(
+      '  …and so is the teams row',
+      await scalar('SELECT COUNT(*)::int AS v FROM teams WHERE "gameId" = $1 AND name = $2', [moving, 'Nil (PG) + AI (SG)']),
+      1,
+    );
+    check('  …lineup invariant still holds', await orphanedLineups(squad.id), 0);
+
+    // The requirement that makes the rename safe: it is scoped to the moved games, so a
+    // game left behind in the source squad keeps that squad's own naming.
+    check(
+      'a game left in the source squad is NOT renamed',
+      await scalar('SELECT COUNT(*)::int AS v FROM players WHERE "gameId" = $1 AND name = $2', [staying, 'Nillan']),
+      1,
+    );
+    check(
+      '  …and keeps its own lineup string',
+      await scalar('SELECT "homeTeam" AS v FROM games WHERE id = $1', [staying]),
+      'Nillan (PG) + AI (SG)',
+    );
+    check('  …source lineup invariant holds', await orphanedLineups(personal), 0);
+
+    // player_totals has no decrement path, so the source must be rebuilt or the moved
+    // game stays in its totals forever.
+    check(
+      'aggregates rebuilt for the source scope',
+      await scalar('SELECT COALESCE(SUM(total_games),0)::int AS v FROM player_totals WHERE squadid = $1', [personal]),
+      1,
+    );
+    check(
+      'aggregates rebuilt for the target scope',
+      await scalar('SELECT COALESCE(SUM(total_games),0)::int AS v FROM player_totals WHERE squadid = $1', [squad.id]),
+      1,
+    );
+  }
+
+  // ── Move: permissions and refusals ─────────────────────────────────────────────
+  await reset();
+  {
+    const { id: owner, personalId: ownerPersonal } = await makeUserWithPersonal('owner');
+    const { id: member, personalId: memberPersonal } = await makeUserWithPersonal('member');
+    const { id: outsider, personalId: outsiderPersonal } = await makeUserWithPersonal('outsider');
+    const squad = await createSquad(owner, 'Squad');
+    await pgClient.query(
+      `INSERT INTO squad_members (id, "squadId", "userId", role, "joinedAt")
+       VALUES (gen_random_uuid()::text, $1, $2, 'MEMBER', NOW())`,
+      [squad.id, member],
+    );
+
+    // Moving a game OUT is a deletion from the source squad's point of view, so a plain
+    // member must not be able to walk off with the group's history.
+    const squadGame = await makeRichGame(squad.id, owner, { player: 'Akif' });
+    check(
+      "a member moving another's game out of the squad → 403",
+      await statusOf(() => moveGamesToSquad(member, memberPersonal, [squadGame])),
+      403,
+    );
+    check(
+      '  …and the game does not move',
+      await scalar('SELECT "squadId" AS v FROM games WHERE id = $1', [squadGame]),
+      squad.id,
+    );
+
+    // But their own upload is theirs to take.
+    const ownUpload = await makeRichGame(squad.id, member, { player: 'Akif' });
+    check(
+      'a member CAN move a game they uploaded',
+      (await moveGamesToSquad(member, memberPersonal, [ownUpload])).moved.length,
+      1,
+    );
+
+    // The owner may move anything out of their own squad.
+    check(
+      'the squad owner can move a game they did not upload',
+      (await moveGamesToSquad(owner, ownerPersonal, [squadGame])).moved.length,
+      1,
+    );
+
+    // A squad the caller is not in must look like it does not exist.
+    const foreign = await makeRichGame(outsiderPersonal, outsider, { player: 'Akif' });
+    check(
+      "moving another squad's game → 404, not 403",
+      await statusOf(() => moveGamesToSquad(owner, ownerPersonal, [foreign])),
+      404,
+    );
+    check(
+      'moving into a squad the caller is not in → 404',
+      await statusOf(() => moveGamesToSquad(outsider, squad.id, [foreign])),
+      404,
+    );
+    check(
+      'a nonexistent game id → 404',
+      await statusOf(() => moveGamesToSquad(owner, ownerPersonal, ['nope'])),
+      404,
+    );
+    check(
+      '  …and the whole batch is refused, not partially applied',
+      await scalar('SELECT "squadId" AS v FROM games WHERE id = $1', [foreign]),
+      outsiderPersonal,
+    );
+  }
+
+  // ── Move: refusing to merge two people ─────────────────────────────────────────
+  await reset();
+  {
+    const { id: owner, personalId: personal } = await makeUserWithPersonal('owner');
+    await addMapping(personal, 'tag_a', 'Nillan');
+    await addMapping(personal, 'tag_b', 'Dylan');
+
+    const squad = await createSquad(owner, 'Merged');
+    await pgClient.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
+    // The target calls BOTH tags the same thing — applying this would sum two players.
+    await addMapping(squad.id, 'tag_a', 'Nil');
+    await addMapping(squad.id, 'tag_b', 'Nil');
+
+    const g = await makeRichGame(personal, owner, { player: 'Nillan' });
+    await pgClient.query(
+      `UPDATE players SET name = 'Dylan' WHERE "gameId" = $1 AND name = 'AI Player'`,
+      [g],
+    );
+
+    check(
+      'a move that would merge two players → 409',
+      await statusOf(() => moveGamesToSquad(owner, squad.id, [g])),
+      409,
+    );
+    check(
+      '  …and nothing is applied',
+      await scalar('SELECT "squadId" AS v FROM games WHERE id = $1', [g]),
+      personal,
+    );
+    check(
+      '  …names untouched',
+      await scalar('SELECT COUNT(*)::int AS v FROM players WHERE "gameId" = $1 AND name = $2', [g, 'Nillan']),
+      1,
     );
   }
 

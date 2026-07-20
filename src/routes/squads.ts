@@ -26,6 +26,7 @@ import {
   listRoster,
   claimRosterEntry,
 } from '@/services/squadService';
+import { moveGamesToSquad } from '@/services/gameMoveService';
 
 const router = Router();
 
@@ -222,6 +223,56 @@ router.post('/:squadId/roster/claim', authenticateToken, async (req: Request, re
     return res.json({ success: true, data: entry } as ApiResponse);
   } catch (error) {
     return fail(res, error, 'Failed to claim roster entry');
+  }
+});
+
+// ── Moving games between squads ──────────────────────────────────────────────────
+
+const MAX_GAMES_PER_MOVE = 500;
+
+/** Validates the game-id list, so a malformed body fails before opening a transaction. */
+function parseGameIds(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new SquadError(400, 'gameIds must be a non-empty array');
+  }
+  if (raw.length > MAX_GAMES_PER_MOVE) {
+    throw new SquadError(400, `Cannot move more than ${MAX_GAMES_PER_MOVE} games at once`);
+  }
+  if (!raw.every((id) => typeof id === 'string' && id.trim().length > 0)) {
+    throw new SquadError(400, 'gameIds must all be non-empty strings');
+  }
+  // Duplicates in the request would make the "one or more games were not found" count
+  // check below fail spuriously.
+  return [...new Set(raw as string[])];
+}
+
+/**
+ * Move games into this squad. The target is the path squad; each game's source is read
+ * from the game itself, so the caller cannot name a source they are not in.
+ *
+ * The response reports what actually happened per game rather than a bare count —
+ * duplicates, renames and unmapped names all need surfacing, and a silent partial success
+ * here is what makes squad analytics drift.
+ */
+router.post('/:squadId/games/move', authenticateToken, async (req: Request, res: Response) => {
+  try {
+    const gameIds = parseGameIds(req.body?.gameIds);
+    const result = await moveGamesToSquad(req.user!.userId, req.params.squadId!, gameIds);
+
+    const parts = [`Moved ${result.moved.length} game${result.moved.length === 1 ? '' : 's'}.`];
+    if (result.duplicates.length > 0) {
+      parts.push(`${result.duplicates.length} were already in the squad.`);
+    }
+    if (result.renamed.length > 0) {
+      parts.push(`Renamed ${result.renamed.length} player${result.renamed.length === 1 ? '' : 's'}.`);
+    }
+    if (result.unmapped.length > 0) {
+      parts.push(`${result.unmapped.length} name(s) are not on this squad's roster yet.`);
+    }
+
+    return res.json({ success: true, data: result, message: parts.join(' ') } as ApiResponse);
+  } catch (error) {
+    return fail(res, error, 'Failed to move games');
   }
 });
 

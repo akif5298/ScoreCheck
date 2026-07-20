@@ -14,6 +14,7 @@ jest.mock('@/services/supabase', () => ({
   __esModule: true,
   default: {
     getGameByScreenshotUrl: jest.fn(),
+    getGameById: jest.fn(),
     saveGameWithStats: jest.fn(),
     getGamesByUserId: jest.fn(),
     getPlayerTotalsByPlayerName: jest.fn(),
@@ -125,6 +126,7 @@ const mocked = jest.mocked(supabaseService);
 beforeEach(() => {
   jest.clearAllMocks();
   mocked.getGameByScreenshotUrl.mockResolvedValue(null);
+  mocked.getGameById.mockResolvedValue({ ...mockGame, players: [mockPlayer] });
   mocked.saveGameWithStats.mockResolvedValue({ game: mockGame, players: [mockPlayer] });
   mocked.getGamesByUserId.mockResolvedValue([]);
   mocked.getPlayerTotalsByPlayerName.mockResolvedValue(null);
@@ -146,6 +148,15 @@ describe('POST /save', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.data).toBeDefined();
       expect(res.body.data.game.id).toBe('game-123');
+    });
+
+    it('returns the saved players — not the user\'s game list — in data.players', async () => {
+      // Regression: data.players was previously populated from getGamesByUserId, so a field
+      // typed Player[] carried Game objects.
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.body.data.players).toEqual([expect.objectContaining({ id: 'player-1' })]);
+      expect(mocked.getGamesByUserId).not.toHaveBeenCalled();
     });
 
     it('calls saveGameWithStats exactly once', async () => {
@@ -172,6 +183,7 @@ describe('POST /save', () => {
     it('returns 200 with "already exists" message for a duplicate imageUrl', async () => {
       const existingGame = { ...mockGame, id: 'existing-game' };
       mocked.getGameByScreenshotUrl.mockResolvedValue(existingGame);
+      mocked.getGameById.mockResolvedValue({ ...existingGame, players: [mockPlayer] });
       mocked.getGamesByUserId.mockResolvedValue([]);
 
       const res = await request(app).post('/save').send(validBody);
@@ -179,6 +191,20 @@ describe('POST /save', () => {
       expect(res.status).toBe(200);
       expect(res.body.message).toMatch(/already exists/i);
       expect(mocked.saveGameWithStats).not.toHaveBeenCalled();
+      // Same regression as the happy path: this must be the game's players.
+      expect(res.body.data.players).toEqual([expect.objectContaining({ id: 'player-1' })]);
+    });
+
+    it('strips nulls when the existing game has no player rows', async () => {
+      // json_agg over a LEFT JOIN yields [null], not [], for a game with no players.
+      const existingGame = { ...mockGame, id: 'existing-game' };
+      mocked.getGameByScreenshotUrl.mockResolvedValue(existingGame);
+      mocked.getGameById.mockResolvedValue({ ...existingGame, players: [null] });
+
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.players).toEqual([]);
     });
   });
 

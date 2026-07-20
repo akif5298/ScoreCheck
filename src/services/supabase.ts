@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { Database } from '@/types/supabase';
 import dotenv from 'dotenv';
 import { Pool, type QueryResult, type QueryResultRow } from 'pg';
+import { randomUUID } from 'node:crypto';
 import logger from '@/utils/logger';
 
 // Minimal shape shared by pg.Pool and a checked-out pg.PoolClient, so CRUD
@@ -182,7 +183,7 @@ export class SupabaseService {
         RETURNING *
       `;
       const values = [
-        gameData.id || `game_${Date.now()}`,
+        gameData.id || `game_${randomUUID()}`,
         gameData.date,
         gameData.homeTeam,
         gameData.awayTeam,
@@ -215,7 +216,7 @@ export class SupabaseService {
         RETURNING *
       `;
       const values = [
-        playerData.id || `player_${Date.now()}`,
+        playerData.id || `player_${randomUUID()}`,
         playerData.gameId,
         playerData.name || playerData.playerName,
         playerData.team,
@@ -262,7 +263,7 @@ export class SupabaseService {
         RETURNING *
       `;
       const values = [
-        teamData.id || `team_${Date.now()}`,
+        teamData.id || `team_${randomUUID()}`,
         teamData.gameId,
         teamData.name,
         teamData.isHome,
@@ -339,7 +340,7 @@ export class SupabaseService {
         RETURNING *
       `;
       const values = [
-        statsData.id || `player_${Date.now()}`,
+        statsData.id || `player_${randomUUID()}`,
         statsData.name || statsData.playerName, statsData.team, 
         statsData.gamesPlayed || 1,
         statsData.avgPoints || 0, statsData.avgRebounds || 0, statsData.avgAssists || 0,
@@ -1162,7 +1163,7 @@ export class SupabaseService {
         `;
 
         const homeTeamValues = [
-          `team_${Date.now()}_home`,
+          `team_${randomUUID()}_home`,
           homeTotals.team,
           true, // isHome
           homeTotals.totalPoints,
@@ -1219,7 +1220,7 @@ export class SupabaseService {
         `;
 
         const awayTeamValues = [
-          `team_${Date.now()}_away`,
+          `team_${randomUUID()}_away`,
           awayTotals.team,
           false, // isHome
           awayTotals.totalPoints,

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { randomUUID } from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { fromBuffer as fileTypeFromBuffer } from 'file-type';
 import supabaseService from '@/services/supabase';
@@ -216,7 +217,10 @@ router.post('/upload-multiple', authenticateToken, uploadRateLimit, extractionQu
         // Upload to Supabase
         const imageNumber = extractImageNumber(file.originalname);
         const userId = req.user!.userId;
-        const fileName = `${userId}-${imageNumber}-boxscore.${file.originalname.split('.').pop()}`;
+        // Unique suffix: imageNumber is scraped from the filename, and phone counters reset,
+        // so two distinct games could yield the same path. uploadImage uses upsert:true, so a
+        // collision silently overwrote the earlier screenshot in Storage.
+        const fileName = `${userId}-${imageNumber}-${randomUUID().slice(0, 8)}-boxscore.${file.originalname.split('.').pop()}`;
         const originalImageUrl = await supabaseService.uploadImage(file.buffer, fileName);
         pendingHashes.set(originalImageUrl, imageHash);
 
@@ -365,7 +369,9 @@ router.post('/upload', authenticateToken, uploadRateLimit, extractionQuota, uplo
     // Persist the screenshot to Supabase Storage and key the review response by
     // its object path (stored in games.screenshotUrl on save — never base64).
     const ext = req.file.originalname.split('.').pop() || 'jpg';
-    const objectPath = `${req.user.userId}-${imageNumber}-boxscore.${ext}`;
+    // Unique suffix — see the note in /upload-multiple: colliding paths silently overwrote
+    // an earlier screenshot because uploadImage uses upsert:true.
+    const objectPath = `${req.user.userId}-${imageNumber}-${randomUUID().slice(0, 8)}-boxscore.${ext}`;
     const originalImageUrl = await supabaseService.uploadImage(req.file.buffer, objectPath);
     pendingHashes.set(originalImageUrl, imageHash);
     const responseData = {
@@ -448,11 +454,17 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
     const existingGame = await supabaseService.getGameByScreenshotUrl(imageUrl, req.user.userId);
     if (existingGame) {
       logger.info({ gameId: existingGame.id }, 'Duplicate save request — returning existing game');
+      // Return this game's own players. (json_agg yields [null] for a game with no player
+      // rows, so strip nulls rather than surfacing them to the client.)
+      const existingFull = await supabaseService.getGameById(existingGame.id, req.user.userId);
+      const existingPlayers = ((existingFull?.players ?? []) as (Player | null)[]).filter(
+        (p): p is Player => p != null,
+      );
       const response: ApiResponse<{ game: Game; players: Player[] }> = {
         success: true,
         data: {
           game: existingGame,
-          players: await supabaseService.getGamesByUserId(req.user.userId),
+          players: existingPlayers,
         },
         message: 'Game already exists in database',
       };
@@ -461,7 +473,9 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
 
     // Pre-generate a stable ID so players and teams can reference the game
     // before the transaction commits, then save everything atomically.
-    const gameId = `game_${Date.now()}`;
+    // UUID rather than Date.now(): two saves in the same millisecond collided, which
+    // becomes far more likely once several people upload into a shared squad.
+    const gameId = `game_${randomUUID()}`;
 
     // Extract image number from the original filename for gameIdFromFile
     const playerImageNumber = extractImageNumber(originalFileName);
@@ -619,12 +633,14 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       userId: req.user!.userId,
     };
 
-    // Retrieve the perceptual hash stored at upload time (null if upload route not used)
+    // Retrieve the perceptual hash stored at upload time (null if upload route not used).
+    // Deliberately NOT removed from the map yet — if the save below throws, the entry must
+    // survive so a retry still persists the hash. Deleting it up front left any retried game
+    // with a null imageHash, i.e. permanently invisible to duplicate detection.
     const savedImageHash = pendingHashes.get(imageUrl) ?? null;
-    pendingHashes.delete(imageUrl);
 
     // Atomic save: game + players + teams in a single pgClient transaction
-    const { game } = await supabaseService.saveGameWithStats(
+    const { game, players: savedPlayers } = await supabaseService.saveGameWithStats(
       {
         id: gameId,
         date: gameData.date || new Date().toISOString(),
@@ -641,6 +657,9 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       homeTeamInput,
       awayTeamInput,
     );
+
+    // Save committed — the upload→save hash bridge for this image is now consumed.
+    pendingHashes.delete(imageUrl);
 
     // Helper: accumulate player_totals for tracked players (does not write to player_stats directly).
     // Tracked players = the user's mapped display names.
@@ -763,7 +782,9 @@ router.post('/save', authenticateToken, async (req: Request, res: Response) => {
       success: true,
       data: {
         game,
-        players: await supabaseService.getGamesByUserId(req.user.userId),
+        // The rows just written by saveGameWithStats — previously this returned the user's
+        // whole game list under a field typed Player[].
+        players: savedPlayers,
       },
       message: 'Box score saved successfully',
     };

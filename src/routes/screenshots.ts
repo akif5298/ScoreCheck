@@ -5,15 +5,20 @@ import fs from 'fs';
 import { randomUUID } from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import { fromBuffer as fileTypeFromBuffer } from 'file-type';
-import supabaseService from '@/services/supabase';
+import supabaseService, { DuplicateGameError } from '@/services/supabase';
 import { EnhancedOCRService } from '@/services/enhancedOCRService';
 import BoxScoreParser from '@/services/boxScoreParser';
 import { authenticateToken } from '@/middleware/auth';
 import { resolveSquad, requireSquadId } from '@/middleware/squad';
+import { getMembership } from '@/services/squadService';
 import { ApiResponse, Game, Player } from '@/types';
 import { classifyScreenshot } from '@/services/junkFilter';
 import { assertExtractionHostReachable } from '@/services/ollamaExtractor';
-import { computePerceptualHash, hammingDistance } from '@/utils/imageHash';
+import {
+  computePerceptualHash,
+  hammingDistance,
+  DUPLICATE_HAMMING_THRESHOLD,
+} from '@/utils/imageHash';
 import { ValidationError, ExtractionUnavailableError } from '@/errors';
 import logger from '@/utils/logger';
 import {
@@ -195,7 +200,9 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
         // Perceptual-hash duplicate check (before OCR to avoid wasted GCV calls)
         const imageHash = await computePerceptualHash(file.buffer);
         const existingHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
-        const isDuplicate = existingHashes.some(h => hammingDistance(imageHash, h) <= 10);
+        const isDuplicate = existingHashes.some(
+          h => hammingDistance(imageHash, h) <= DUPLICATE_HAMMING_THRESHOLD,
+        );
         if (isDuplicate) {
           throw Object.assign(new Error(`${file.originalname}: visually similar screenshot already saved`), {
             code: 'DUPLICATE_SCREENSHOT',
@@ -293,7 +300,7 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
     // Perceptual-hash duplicate check (before OCR to avoid wasted GCV calls)
     const imageHash = await computePerceptualHash(req.file.buffer);
     const existingHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
-    if (existingHashes.some(h => hammingDistance(imageHash, h) <= 10)) {
+    if (existingHashes.some(h => hammingDistance(imageHash, h) <= DUPLICATE_HAMMING_THRESHOLD)) {
       return res.status(409).json({
         success: false,
         code: 'DUPLICATE_SCREENSHOT',
@@ -640,26 +647,72 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
     // with a null imageHash, i.e. permanently invisible to duplicate detection.
     const savedImageHash = pendingHashes.get(imageUrl) ?? null;
 
-    // Atomic save: game + players + teams in a single pgClient transaction
-    const { game, players: savedPlayers } = await supabaseService.saveGameWithStats(
-      {
-        id: gameId,
-        date: gameData.date || new Date().toISOString(),
-        homeTeam: gameData.homeTeam,
-        awayTeam: gameData.awayTeam,
-        homeScore: gameData.homeScore,
-        awayScore: gameData.awayScore,
-        screenshotUrl: imageUrl,
-        imageHash: savedImageHash,
-        processed: true,
-        squadId: requireSquadId(req),
-        // Attribution + delete/move rights. Distinct from squadId, which controls access.
-        uploadedByUserId: req.user.userId,
-      },
-      playerInputs,
-      homeTeamInput,
-      awayTeamInput,
-    );
+    // Atomic save: game + players + teams in a single pgClient transaction, which also
+    // re-checks for a perceptual duplicate under an advisory lock (see
+    // SupabaseService.assertNotDuplicateInSquad).
+    let saveResult: { game: any; players: Player[] };
+    try {
+      saveResult = await supabaseService.saveGameWithStats(
+        {
+          id: gameId,
+          date: gameData.date || new Date().toISOString(),
+          homeTeam: gameData.homeTeam,
+          awayTeam: gameData.awayTeam,
+          homeScore: gameData.homeScore,
+          awayScore: gameData.awayScore,
+          screenshotUrl: imageUrl,
+          imageHash: savedImageHash,
+          processed: true,
+          squadId: requireSquadId(req),
+          // Attribution + delete/move rights. Distinct from squadId, which controls access.
+          uploadedByUserId: req.user.userId,
+        },
+        playerInputs,
+        homeTeamInput,
+        awayTeamInput,
+      );
+    } catch (saveError) {
+      if (!(saveError instanceof DuplicateGameError)) throw saveError;
+
+      // Lost the save-time dedup race: another member committed the same screenshot while
+      // this one sat in review. Not a failure — the game the user was saving is in the
+      // squad, so respond as the imageUrl-duplicate path above does. A 500 here would
+      // tell the user their game was lost when it demonstrably was not.
+      logger.info(
+        { gameId: saveError.existingGameId, squadId: requireSquadId(req) },
+        'Concurrent save of the same screenshot — returning the game that won the race',
+      );
+
+      // Terminal outcome, so the upload→save bridge for this image is done with. Leaving
+      // it would pin the entry in the map for the process's lifetime.
+      pendingHashes.delete(imageUrl);
+
+      const squadId = requireSquadId(req);
+      const winner = await supabaseService.getGameById(saveError.existingGameId, squadId);
+      if (!winner) {
+        // The winning game vanished between the aborted save and this read — only possible
+        // if it was deleted in that window. Reporting a duplicate would point the client at
+        // a game that no longer exists, so surface it as the failure it is and let the user
+        // retry, which will now succeed.
+        throw saveError;
+      }
+      // Drop the aggregate fields so the shape matches the other duplicate path, and strip
+      // json_agg's [null] for a game with no player rows.
+      const { players: winnerPlayers, teams: _teams, ...winnerGame } = winner as any;
+      const response: ApiResponse<{ game: Game; players: Player[] }> = {
+        success: true,
+        data: {
+          game: winnerGame as Game,
+          players: ((winnerPlayers ?? []) as (Player | null)[]).filter(
+            (p): p is Player => p != null,
+          ),
+        },
+        message: 'Game already exists in database',
+      };
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json(response);
+    }
+    const { game, players: savedPlayers } = saveResult;
 
     // Save committed — the upload→save hash bridge for this image is now consumed.
     pendingHashes.delete(imageUrl);
@@ -919,6 +972,83 @@ router.put('/games/:gameId', authenticateToken, resolveSquad, async (req: Reques
     };
 
     return res.status(500).json(response);
+  }
+});
+
+/**
+ * Delete a game from the active squad.
+ *
+ * New in the squad work — until now deletion existed only as an admin route
+ * (`src/routes/admin.ts`), so members had no way to remove their own bad upload.
+ *
+ * Permission: the uploader, or the squad's OWNER. Any member may *edit* a shared game, but
+ * removing one from the group's history is a stronger act, so it stays with the person who
+ * contributed it or the person who runs the squad.
+ */
+router.delete('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'User not authenticated' } as ApiResponse);
+    }
+
+    const { gameId } = req.params;
+    const squadId = requireSquadId(req);
+
+    // resolveSquad already proved membership; this reads the role, which decides whether a
+    // non-uploader may delete.
+    const membership = await getMembership(req.user.userId, squadId);
+    if (!membership) {
+      return res.status(404).json({ success: false, error: 'Squad not found' } as ApiResponse);
+    }
+
+    const result = await supabaseService.deleteGameForSquad(gameId!, squadId, {
+      userId: req.user.userId,
+      isOwner: membership.role === 'OWNER',
+    });
+
+    if (result.outcome === 'not_found') {
+      return res.status(404).json({ success: false, error: 'Game not found' } as ApiResponse);
+    }
+    if (result.outcome === 'forbidden') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only the member who uploaded this game, or the squad owner, can delete it',
+      } as ApiResponse);
+    }
+
+    // Past the commit: the game is gone regardless of what follows. Both remaining steps are
+    // non-transactional, so a failure in either is logged and reported as success — saying
+    // the delete failed would be false, and would invite a retry that 404s.
+    if (result.screenshotUrl) {
+      try {
+        await supabaseService.deleteImage(result.screenshotUrl);
+      } catch (storageErr) {
+        // Leaves an unreferenced object in the bucket. Costs storage; breaks nothing.
+        logger.error(
+          { err: storageErr, gameId, screenshotUrl: result.screenshotUrl },
+          'Game deleted but its screenshot could not be removed from storage',
+        );
+      }
+    }
+
+    try {
+      await supabaseService.recomputeSquadAggregates(squadId);
+    } catch (aggregateErr) {
+      // Totals now include a game that no longer exists. Self-heals on the squad's next
+      // write, because the rebuild derives everything from `players`.
+      logger.error(
+        { err: aggregateErr, gameId, squadId },
+        'Game deleted but squad aggregate rebuild failed — totals are stale until the next write',
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Game deleted successfully',
+    } as ApiResponse);
+  } catch (error) {
+    logger.error({ err: error }, 'Error deleting game');
+    return res.status(500).json({ success: false, error: 'Failed to delete game' } as ApiResponse);
   }
 });
 

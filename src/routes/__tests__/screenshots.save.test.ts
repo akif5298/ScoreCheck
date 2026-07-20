@@ -10,17 +10,28 @@ import express from 'express';
 
 // ── Mocks (must be declared before any import that loads the mocked modules) ──
 
-jest.mock('@/services/supabase', () => ({
-  __esModule: true,
-  default: {
-    getGameByScreenshotUrl: jest.fn(),
-    getGameById: jest.fn(),
-    saveGameWithStats: jest.fn(),
-    getGamesBySquadId: jest.fn(),
-    // Single aggregate path; the per-player incremental helpers are gone.
-    recomputeSquadAggregates: jest.fn(),
-  },
-}));
+jest.mock('@/services/supabase', () => {
+  // Declared inside the factory so the route's `instanceof` check compares against this
+  // exact class — the route imports it from the mocked module, so there is only one.
+  class DuplicateGameError extends Error {
+    constructor(public readonly existingGameId: string) {
+      super(`Game already exists in this squad (${existingGameId})`);
+      this.name = 'DuplicateGameError';
+    }
+  }
+  return {
+    __esModule: true,
+    DuplicateGameError,
+    default: {
+      getGameByScreenshotUrl: jest.fn(),
+      getGameById: jest.fn(),
+      saveGameWithStats: jest.fn(),
+      getGamesBySquadId: jest.fn(),
+      // Single aggregate path; the per-player incremental helpers are gone.
+      recomputeSquadAggregates: jest.fn(),
+    },
+  };
+});
 
 jest.mock('@/services/mappingService', () => ({
   __esModule: true,
@@ -213,6 +224,72 @@ describe('POST /save', () => {
 
       expect(res.status).toBe(200);
       expect(res.body.data.players).toEqual([]);
+    });
+  });
+
+  describe('losing the save-time dedup race', () => {
+    // saveGameWithStats re-checks for a perceptual duplicate under an advisory lock and
+    // aborts if another member committed the same screenshot first (see
+    // supabase.saveDedup.test.ts). This is how the route reports that outcome.
+    const { DuplicateGameError } = jest.requireMock('@/services/supabase');
+
+    const winner = { ...mockGame, id: 'game-winner' };
+
+    beforeEach(() => {
+      mocked.saveGameWithStats.mockRejectedValue(new DuplicateGameError('game-winner'));
+      mocked.getGameById.mockResolvedValue({ ...winner, players: [mockPlayer], teams: [] });
+    });
+
+    it('returns 200, not 500 — the game the user wanted is in the squad', async () => {
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.message).toMatch(/already exists/i);
+    });
+
+    it('returns the winning game and its players', async () => {
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.body.data.game.id).toBe('game-winner');
+      expect(res.body.data.players).toEqual([expect.objectContaining({ id: 'player-1' })]);
+      expect(mocked.getGameById).toHaveBeenCalledWith('game-winner', 'test-squad-1');
+    });
+
+    it('does not leak the json_agg aggregate fields into the game object', async () => {
+      // The imageUrl-duplicate path returns a bare game row; both duplicate paths must
+      // hand the client the same shape.
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.body.data.game).not.toHaveProperty('players');
+      expect(res.body.data.game).not.toHaveProperty('teams');
+    });
+
+    it('strips nulls when the winning game has no player rows', async () => {
+      mocked.getGameById.mockResolvedValue({ ...winner, players: [null], teams: [] });
+
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.body.data.players).toEqual([]);
+    });
+
+    it('falls back to 500 if the winning game vanished before it could be read', async () => {
+      // Only reachable if the winner was deleted between the aborted save and this read.
+      // Returning "already exists" would point the client at a game that does not.
+      mocked.getGameById.mockResolvedValue(null);
+
+      const res = await request(app).post('/save').send(validBody);
+
+      expect(res.status).toBe(500);
+      expect(res.body.success).toBe(false);
+    });
+
+    it('does not rebuild aggregates — this request wrote nothing', async () => {
+      // The winning save already rebuilt them; doing it again would be wasted work
+      // attributed to a request that rolled back.
+      await request(app).post('/save').send(validBody);
+
+      expect(mocked.recomputeSquadAggregates).not.toHaveBeenCalled();
     });
   });
 

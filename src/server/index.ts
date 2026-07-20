@@ -21,6 +21,7 @@ import screenshotRoutes from '@/routes/screenshots';
 import analyticsRoutes from '@/routes/analytics';
 import adminRoutes from '@/routes/admin';
 import mappingsRouter from '@/routes/mappings';
+import squadsRouter from '@/routes/squads';
 
 const app = express();
 const PORT = env.PORT;
@@ -137,6 +138,7 @@ app.use('/api/screenshots', screenshotRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/mappings', mappingsRouter);
+app.use('/api/squads', squadsRouter);
 
 // Serve the SPA shell for all non-API routes when a client build exists
 if (clientBuildExists) {

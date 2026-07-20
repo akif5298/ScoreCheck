@@ -23,6 +23,14 @@ export async function computePerceptualHash(imageBuffer: Buffer): Promise<string
   return hex;
 }
 
+// Two screenshots within this many differing bits are treated as the same game.
+// Shared by the upload-time check and the save-time re-check so the two can never
+// disagree — a save-time threshold stricter than the upload-time one would reject
+// games the user was already told were fine, and a looser one would let the race
+// through. Validated against the 38 backfilled screenshots: no two distinct games
+// fall within this distance of each other.
+export const DUPLICATE_HAMMING_THRESHOLD = 10;
+
 export function hammingDistance(hashA: string, hashB: string): number {
   if (hashA.length !== hashB.length) {
     throw new Error(`Hash length mismatch: ${hashA.length} vs ${hashB.length}`);

@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { Pool, type QueryResult, type QueryResultRow } from 'pg';
 import { randomUUID } from 'node:crypto';
 import logger from '@/utils/logger';
+import { hammingDistance, DUPLICATE_HAMMING_THRESHOLD } from '@/utils/imageHash';
 
 // Minimal shape shared by pg.Pool and a checked-out pg.PoolClient, so CRUD
 // helpers can run either on the pool (default) or inside a transaction's
@@ -14,6 +15,22 @@ export interface Queryable {
     values?: any[],
   ): Promise<QueryResult<R>>;
 }
+
+// Raised when a save is aborted because the squad already holds a perceptually
+// identical screenshot. Carries the winning game's id so the caller can return it
+// instead of an error — from the user's point of view the game is present, which is
+// what they wanted. Distinguishable from a genuine failure by `instanceof`, so the
+// route does not report a 500 for what is a successful no-op.
+export class DuplicateGameError extends Error {
+  constructor(public readonly existingGameId: string) {
+    super(`Game already exists in this squad (${existingGameId})`);
+    this.name = 'DuplicateGameError';
+  }
+}
+
+// Arbitrary but fixed first key for squad-save advisory locks. Two-key form so these
+// locks share no space with any other advisory lock added later.
+const SQUAD_SAVE_LOCK_NAMESPACE = 0x5343;
 
 // Load environment variables
 dotenv.config();
@@ -335,8 +352,55 @@ export class SupabaseService {
     }
     }
 
+  // Serialises concurrent saves within one squad, then re-runs the perceptual-hash
+  // duplicate check against committed rows. Must be called inside a transaction.
+  //
+  // Why this exists: the upload route already rejects duplicates, but that check runs
+  // ~22s before the row is written (the gap is bridged by the in-memory `pendingHashes`
+  // map). Two members uploading the same screenshot at the same time therefore both pass
+  // it — neither game is in the table yet — and both reach the save. A unique index
+  // cannot close this: the match is fuzzy (hamming distance), not equality.
+  //
+  // pg_advisory_xact_lock is released automatically at COMMIT or ROLLBACK, so no failure
+  // path below can strand it. Holding it in the database rather than in process memory
+  // means this stays correct if the API is ever run on more than one instance — unlike
+  // `pendingHashes` and the extraction quota counters, which do not.
+  private async assertNotDuplicateInSquad(gameData: any, client: Queryable): Promise<void> {
+    await client.query('SELECT pg_advisory_xact_lock($1, hashtext($2))', [
+      SQUAD_SAVE_LOCK_NAMESPACE,
+      gameData.squadId,
+    ]);
+
+    // No hash means this game did not come through the upload route (or hashing failed),
+    // so there is nothing to compare and the save proceeds. Such a game is invisible to
+    // duplicate detection from then on, which is why the hash is preserved across a
+    // failed save rather than consumed before the commit.
+    if (!gameData.imageHash) return;
+
+    const { rows } = await client.query(
+      `SELECT id, "imageHash" FROM games WHERE "squadId" = $1 AND "imageHash" IS NOT NULL`,
+      [gameData.squadId],
+    );
+
+    const match = rows.find((row: any) => {
+      // hammingDistance throws on a length mismatch. Every stored hash is 60 chars today,
+      // but a stray legacy value must not turn a save into a 500 — treat it as no match.
+      if (row.imageHash.length !== gameData.imageHash.length) return false;
+      return hammingDistance(gameData.imageHash, row.imageHash) <= DUPLICATE_HAMMING_THRESHOLD;
+    });
+
+    if (match) {
+      // Thrown, not returned: the caller's transaction must not commit. The catch in
+      // saveGameWithStats issues the ROLLBACK, which also drops the advisory lock.
+      throw new DuplicateGameError(match.id);
+    }
+  }
+
   // Atomically creates a game, its players, and both team records in a single
   // pgClient transaction. Rolls back all writes if any step fails.
+  //
+  // Throws DuplicateGameError if the squad already holds a perceptually identical
+  // screenshot — see the check below.
   async saveGameWithStats(
     gameData: any,
     playersData: any[],
@@ -346,6 +410,7 @@ export class SupabaseService {
     const client = await pgPool.connect();
     try {
       await client.query('BEGIN');
+      await this.assertNotDuplicateInSquad(gameData, client);
       const game = await this.createGame(gameData, client);
       const players = await Promise.all(playersData.map(p => this.createPlayer(p, client)));
       await Promise.all([
@@ -1052,6 +1117,71 @@ export class SupabaseService {
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');
       throw error;
+    }
+  }
+
+  /**
+   * Deletes a game from one squad, enforcing the delete rule in the same transaction that
+   * performs the delete.
+   *
+   * Outcomes are distinguished deliberately:
+   *   - `not_found`  — no such game *in this squad*. A game in another squad reports the
+   *                    same thing, so membership of other squads is never disclosed.
+   *   - `forbidden`  — it exists and the caller may see it, but is neither its uploader
+   *                    nor the squad owner.
+   *   - `deleted`    — gone, along with its players and teams (both cascade on gameId,
+   *                    verified against the live schema).
+   *
+   * The row is locked with FOR UPDATE between the check and the delete so two concurrent
+   * deletes cannot both pass the permission check against a row one of them is removing.
+   *
+   * Storage cleanup and aggregate rebuild are the caller's job: neither is transactional,
+   * so both belong after the commit.
+   */
+  async deleteGameForSquad(
+    gameId: string,
+    squadId: string,
+    actor: { userId: string; isOwner: boolean },
+  ): Promise<
+    | { outcome: 'deleted'; screenshotUrl: string | null }
+    | { outcome: 'not_found' }
+    | { outcome: 'forbidden' }
+  > {
+    const client = await pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const found = await client.query<{ uploadedByUserId: string; screenshotUrl: string | null }>(
+        `SELECT "uploadedByUserId", "screenshotUrl" FROM games
+         WHERE id = $1 AND "squadId" = $2 FOR UPDATE`,
+        [gameId, squadId],
+      );
+      const game = found.rows[0];
+      if (!game) {
+        await client.query('ROLLBACK');
+        return { outcome: 'not_found' };
+      }
+
+      // Uploader or squad owner. A plain member may edit any of the squad's games but may
+      // not remove another member's upload from the group's shared history.
+      if (game.uploadedByUserId !== actor.userId && !actor.isOwner) {
+        await client.query('ROLLBACK');
+        return { outcome: 'forbidden' };
+      }
+
+      await client.query(`DELETE FROM games WHERE id = $1 AND "squadId" = $2`, [gameId, squadId]);
+      await client.query('COMMIT');
+      return { outcome: 'deleted', screenshotUrl: game.screenshotUrl };
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.error({ err: rollbackErr }, 'Rollback failed after game delete error');
+      }
+      logger.error({ err: error, gameId, squadId }, 'Error deleting game');
+      throw error;
+    } finally {
+      client.release();
     }
   }
 }

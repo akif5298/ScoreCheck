@@ -183,15 +183,21 @@ export function UploadSessionProvider({ children }: { children: ReactNode }) {
     for (const it of toStart) void extractItem(it.id, it.file);
   }, [items, extractItem]);
 
-  // Keep a sensible selection: when nothing is selected (or the selected file was just saved),
-  // jump to the first file that's ready to review.
+  // Keep a sensible selection. Select the first file immediately — even while it's still
+  // queued/extracting — so its screenshot shows the moment you land on the review page,
+  // rather than a placeholder until extraction finishes. Then, once a file is saved, advance
+  // to the next one that's ready to review.
   useEffect(() => {
     if (items.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
     }
     const selected = items.find((i) => i.id === selectedId);
-    if (!selected || selected.status === "saved") {
+    if (!selected) {
+      setSelectedId(items[0].id);
+      return;
+    }
+    if (selected.status === "saved") {
       const nextReady = items.find((i) => i.status === "ready");
       if (nextReady && nextReady.id !== selectedId) setSelectedId(nextReady.id);
     }

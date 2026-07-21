@@ -155,19 +155,22 @@ function ReviewWorkspace() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* Left rail: uploads list (under the hamburger, per the layout) */}
-        <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-secondary/30 lg:w-64">
-          <div className="flex items-center justify-between px-4 py-3">
+        {/* Left rail: a slim strip of screenshots you scroll through, each with its name under it. */}
+        <aside className="flex w-40 shrink-0 flex-col border-r border-border bg-secondary/30 lg:w-44">
+          <div className="flex items-center justify-between px-3 py-2.5">
             <span className="stamp">Uploads · {items.length}</span>
-            {counts.pending > 0 && <Badge tone="outline">{counts.pending} extracting</Badge>}
+            {counts.pending > 0 && (
+              <span className="font-mono text-[10px] text-muted-foreground">{counts.pending}⋯</span>
+            )}
           </div>
 
-          <div className="flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
+          <div className="flex-1 space-y-2 overflow-y-auto px-2 pb-3">
             {items.map((it) => (
               <button
                 key={it.id}
                 onClick={() => select(it.id)}
-                className={`flex w-full items-center gap-3 rounded-md border p-2 text-left transition-colors ${
+                title={it.filename}
+                className={`block w-full rounded-md border p-1 text-left transition-colors ${
                   it.id === selectedId
                     ? "border-foreground bg-secondary/70"
                     : "border-border bg-card hover:bg-secondary/50"
@@ -176,30 +179,28 @@ function ReviewWorkspace() {
                 <img
                   src={it.previewUrl}
                   alt=""
-                  className="h-10 w-16 shrink-0 rounded border border-border object-cover"
+                  className="aspect-video w-full rounded border border-border object-cover"
                 />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-xs text-muted-foreground">
+                <div className="mt-1 flex items-center justify-between gap-1 px-0.5">
+                  <span className="truncate font-mono text-[10px] text-muted-foreground">
                     {it.filename}
-                  </div>
-                  <div className="mt-1">
-                    <StatusBadge status={it.status} />
-                  </div>
+                  </span>
+                  <StatusDot status={it.status} />
                 </div>
               </button>
             ))}
           </div>
 
-          <div className="flex items-center gap-2 border-t border-border p-3">
+          <div className="flex flex-col gap-2 border-t border-border p-2">
             <button
               onClick={() => addInputRef.current?.click()}
-              className="inline-flex h-9 flex-1 items-center justify-center rounded-md border border-border bg-surface px-3 text-sm font-medium hover:bg-secondary"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-surface px-3 text-sm font-medium hover:bg-secondary"
             >
               + Add more
             </button>
             <button
               onClick={startOver}
-              className="inline-flex h-9 items-center rounded-md border border-border bg-surface px-3 text-sm font-medium text-muted-foreground hover:bg-secondary"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-surface px-3 text-xs font-medium text-muted-foreground hover:bg-secondary"
             >
               Start over
             </button>
@@ -318,6 +319,25 @@ function StatusBadge({ status }: { status: ItemStatus }) {
   }
 }
 
+// Compact status indicator for the slim rail, where a full text badge won't fit.
+function StatusDot({ status }: { status: ItemStatus }) {
+  const map: Record<ItemStatus, { cls: string; label: string; pulse?: boolean }> = {
+    queued: { cls: "bg-muted-foreground/50", label: "Queued" },
+    extracting: { cls: "bg-primary", label: "Extracting", pulse: true },
+    ready: { cls: "bg-primary", label: "Ready" },
+    saving: { cls: "bg-primary", label: "Saving", pulse: true },
+    saved: { cls: "bg-success", label: "Saved" },
+    error: { cls: "bg-destructive", label: "Error" },
+  };
+  const s = map[status];
+  return (
+    <span
+      title={s.label}
+      className={`h-2 w-2 shrink-0 rounded-full ${s.cls} ${s.pulse ? "animate-pulse" : ""}`}
+    />
+  );
+}
+
 function ExtractingCard({ queued }: { queued: boolean }) {
   return (
     <Card>
@@ -366,6 +386,31 @@ function ReviewPane({
   onSave: () => void;
 }) {
   const saving = item.status === "saving";
+
+  // Split the roster into its two teams so each shows as a clear group of players. Group by the
+  // players' own team string (which the save path expects to equal homeTeam/awayTeam), preserving
+  // each player's original index so the edit handlers still target the right row.
+  const groups: {
+    team: string;
+    score?: number;
+    rows: { player: ExtractedPlayer; idx: number }[];
+  }[] = [];
+  item.players.forEach((player, idx) => {
+    const team = player.team || "Unassigned";
+    let group = groups.find((g) => g.team === team);
+    if (!group) {
+      const score =
+        team === item.gameData.homeTeam
+          ? item.gameData.homeScore
+          : team === item.gameData.awayTeam
+            ? item.gameData.awayScore
+            : undefined;
+      group = { team, score, rows: [] };
+      groups.push(group);
+    }
+    group.rows.push({ player, idx });
+  });
+
   return (
     <div className="space-y-6">
       <Card>
@@ -403,94 +448,184 @@ function ReviewPane({
         </div>
       </Card>
 
-      <Card
-        title="Player stats"
-        hint={`${item.players.length} rows · assign names + correct stats`}
-      >
-        {allowedNames.length === 0 && (
-          <div className="mb-4 rounded-md border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
-            No mapped players yet — totals and analytics only track names from your{" "}
-            <Link
-              to="/roster"
-              className="font-medium text-foreground underline-offset-4 hover:underline"
-            >
-              roster mappings
-            </Link>
-            . Add gamertag → name mappings first so assigned stats count.
-          </div>
-        )}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border-strong text-left">
-                <th className="stamp pb-2 pr-3 font-normal min-w-[140px]">Player</th>
-                <th className="stamp pb-2 pr-3 font-normal">Team</th>
-                {["PTS", "REB", "AST", "STL", "BLK", "TO", "PF"].map((h) => (
-                  <th key={h} className="stamp px-1 pb-2 text-right font-normal">
-                    {h}
-                  </th>
-                ))}
-                <th className="stamp px-2 pb-2 text-right font-normal">FG</th>
-                <th className="stamp px-2 pb-2 text-right font-normal">3P</th>
-                <th className="stamp px-2 pb-2 text-right font-normal">FT</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {item.players.map((p, idx) => (
-                <tr key={idx} className="hover:bg-secondary/40">
-                  <td className="py-2 pr-3">
-                    <select
-                      value={p.name}
-                      onChange={(e) => onPlayerName(idx, e.target.value)}
-                      className="w-full rounded border border-border bg-background px-2 py-1 text-sm focus:border-foreground focus:outline-none"
-                    >
-                      <option value="">— assign —</option>
-                      {allowedNames.map((n) => (
-                        <option key={n} value={n}>
-                          {n}
-                        </option>
-                      ))}
-                      {p.name && !allowedNames.includes(p.name) && (
-                        <option value={p.name}>{p.name} (OCR)</option>
-                      )}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-3 text-xs text-muted-foreground">{p.team}</td>
-                  {(
-                    [
-                      "points",
-                      "rebounds",
-                      "assists",
-                      "steals",
-                      "blocks",
-                      "turnovers",
-                      "fouls",
-                    ] as const
-                  ).map((k) => (
-                    <td key={k} className="px-0.5 text-right">
-                      <input
-                        type="number"
-                        value={p[k]}
-                        onChange={(e) => onStat(idx, k, Number(e.target.value))}
-                        className="w-12 rounded border border-transparent bg-transparent px-1.5 py-1 text-right font-mono tabular-nums hover:border-border focus:border-foreground focus:outline-none"
-                      />
-                    </td>
-                  ))}
-                  <td className="px-2 text-right font-mono text-xs text-muted-foreground tabular-nums">
-                    {p.fgMade}/{p.fgAttempted}
-                  </td>
-                  <td className="px-2 text-right font-mono text-xs text-muted-foreground tabular-nums">
-                    {p.threeMade}/{p.threeAttempted}
-                  </td>
-                  <td className="px-2 text-right font-mono text-xs text-muted-foreground tabular-nums">
-                    {p.ftMade}/{p.ftAttempted}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {allowedNames.length === 0 && (
+        <div className="rounded-md border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+          No mapped players yet — totals and analytics only track names from your{" "}
+          <Link
+            to="/roster"
+            className="font-medium text-foreground underline-offset-4 hover:underline"
+          >
+            roster mappings
+          </Link>
+          . Add gamertag → name mappings first so assigned stats count.
         </div>
-      </Card>
+      )}
+
+      {groups.map((group) => (
+        <TeamStatsTable
+          key={group.team}
+          team={group.team}
+          score={group.score}
+          rows={group.rows}
+          allowedNames={allowedNames}
+          onPlayerName={onPlayerName}
+          onStat={onStat}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TeamStatsTable({
+  team,
+  score,
+  rows,
+  allowedNames,
+  onPlayerName,
+  onStat,
+}: {
+  team: string;
+  score?: number;
+  rows: { player: ExtractedPlayer; idx: number }[];
+  allowedNames: string[];
+  onPlayerName: (idx: number, name: string) => void;
+  onStat: (idx: number, key: keyof ExtractedPlayer, value: number) => void;
+}) {
+  return (
+    <Card
+      title={team || "Team"}
+      hint={`${rows.length} players`}
+      action={
+        score !== undefined ? (
+          <span className="font-mono text-2xl font-semibold tabular-nums">{score}</span>
+        ) : undefined
+      }
+    >
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border-strong text-left">
+              <th className="stamp pb-2 pr-3 font-normal min-w-[140px]">Player</th>
+              {["PTS", "REB", "AST", "STL", "BLK", "TO", "PF"].map((h) => (
+                <th key={h} className="stamp px-1 pb-2 text-right font-normal">
+                  {h}
+                </th>
+              ))}
+              <th className="stamp px-1 pb-2 text-center font-normal">FG</th>
+              <th className="stamp px-1 pb-2 text-center font-normal">3P</th>
+              <th className="stamp px-1 pb-2 text-center font-normal">FT</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {rows.map(({ player: p, idx }) => (
+              <tr key={idx} className="hover:bg-secondary/40">
+                <td className="py-2 pr-3">
+                  <select
+                    value={p.name}
+                    onChange={(e) => onPlayerName(idx, e.target.value)}
+                    className="w-full rounded border border-border bg-background px-2 py-1 text-sm focus:border-foreground focus:outline-none"
+                  >
+                    <option value="">— assign —</option>
+                    {allowedNames.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                    {p.name && !allowedNames.includes(p.name) && (
+                      <option value={p.name}>{p.name}</option>
+                    )}
+                  </select>
+                </td>
+                {(
+                  [
+                    "points",
+                    "rebounds",
+                    "assists",
+                    "steals",
+                    "blocks",
+                    "turnovers",
+                    "fouls",
+                  ] as const
+                ).map((k) => (
+                  <td key={k} className="px-0.5 text-right">
+                    <StatInput value={p[k]} onChange={(v) => onStat(idx, k, v)} />
+                  </td>
+                ))}
+                <td className="px-1">
+                  <MadeAttempt
+                    made={p.fgMade}
+                    attempted={p.fgAttempted}
+                    onMade={(v) => onStat(idx, "fgMade", v)}
+                    onAttempted={(v) => onStat(idx, "fgAttempted", v)}
+                  />
+                </td>
+                <td className="px-1">
+                  <MadeAttempt
+                    made={p.threeMade}
+                    attempted={p.threeAttempted}
+                    onMade={(v) => onStat(idx, "threeMade", v)}
+                    onAttempted={(v) => onStat(idx, "threeAttempted", v)}
+                  />
+                </td>
+                <td className="px-1">
+                  <MadeAttempt
+                    made={p.ftMade}
+                    attempted={p.ftAttempted}
+                    onMade={(v) => onStat(idx, "ftMade", v)}
+                    onAttempted={(v) => onStat(idx, "ftAttempted", v)}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function StatInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <input
+      type="number"
+      value={value}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="w-12 rounded border border-transparent bg-transparent px-1.5 py-1 text-right font-mono tabular-nums hover:border-border focus:border-foreground focus:outline-none"
+    />
+  );
+}
+
+// FG / 3P / FT are made-and-attempted pairs, both editable.
+function MadeAttempt({
+  made,
+  attempted,
+  onMade,
+  onAttempted,
+}: {
+  made: number;
+  attempted: number;
+  onMade: (v: number) => void;
+  onAttempted: (v: number) => void;
+}) {
+  const cls =
+    "w-9 rounded border border-transparent bg-transparent px-1 py-1 text-right font-mono tabular-nums hover:border-border focus:border-foreground focus:outline-none";
+  return (
+    <div className="flex items-center justify-center gap-0.5">
+      <input
+        type="number"
+        value={made}
+        onChange={(e) => onMade(Number(e.target.value))}
+        className={cls}
+        aria-label="Made"
+      />
+      <span className="text-muted-foreground">/</span>
+      <input
+        type="number"
+        value={attempted}
+        onChange={(e) => onAttempted(Number(e.target.value))}
+        className={cls}
+        aria-label="Attempted"
+      />
     </div>
   );
 }

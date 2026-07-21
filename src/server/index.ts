@@ -60,7 +60,10 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
       scriptSrc: ["'self'", ...inlineScriptHashes],
-      imgSrc: ["'self'", 'data:', 'https:'],
+      // 'blob:' is required so the upload/review page can preview the just-picked
+      // screenshot via URL.createObjectURL() before it's saved. Without it the CSP
+      // blocks the <img> from embedding (though the blob URL still opens directly).
+      imgSrc: ["'self'", 'data:', 'https:', 'blob:'],
     },
   },
 }));

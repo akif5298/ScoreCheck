@@ -12,7 +12,13 @@ import { api } from "@/lib/api";
 export interface ExtractedPlayer {
   id?: string;
   name: string;
+  /** Stable raw side key from OCR ("Team A" / "Team B"). Never mutated during review — the
+   *  display name (composite lineup or "Team A"/"Team B") is derived from it, see computeReviewTeams. */
   team: string;
+  /** NBA 2K teammate grade (e.g. "A+", "B-"). Extracted by OCR, correctable on review. */
+  teammateGrade: string;
+  /** Basketball position (PG/SG/SF/PF/C), assigned by roster slot. Used to build the team name. */
+  position: string;
   points: number;
   rebounds: number;
   assists: number;
@@ -65,6 +71,68 @@ export interface UploadItem {
 // with a daily quota, so a small cap keeps a couple moving without flooding one cold start.
 const CONCURRENCY = 2;
 
+// Roster slots in order → basketball position, so the first player on a side is PG, etc.
+const POSITIONS = ["PG", "SG", "SF", "PF", "C"] as const;
+
+export interface ReviewTeam {
+  /** Raw side key ("Team A" / "Team B") — the grouping key and what save maps from. */
+  key: string;
+  /** What to show and what to store: a composite lineup when the side has assigned roster
+   *  players ("Akif (PG) + AI (SG) + …"), otherwise the raw "Team A" / "Team B". */
+  displayName: string;
+  /** Team score = sum of its players' points (live). */
+  score: number;
+  rows: { player: ExtractedPlayer; idx: number }[];
+}
+
+// Case-insensitive: a player counts as "on the user's roster" once assigned to a mapped name.
+function isAssigned(name: string, allowedNames: string[]): boolean {
+  const n = name.trim().toLowerCase();
+  return allowedNames.some((a) => a.trim().toLowerCase() === n);
+}
+
+/**
+ * Groups the 10 players into their two sides and derives each side's display name and score.
+ *
+ * The naming convention mirrors the backend (EnhancedOCRService.generateCustomTeamNamesAfterAssignment):
+ * a side with at least one assigned roster player is named as its composite lineup
+ * ("Akif (PG) + AI (SG) + Random (SF) + …"); a side with none keeps its raw "Team A"/"Team B"
+ * label. The save endpoint takes these names verbatim, and lineup analytics later join on
+ * `players.team = games.homeTeam`, so the same string is written to both the game and every
+ * one of that side's player rows.
+ */
+export function computeReviewTeams(
+  players: ExtractedPlayer[],
+  allowedNames: string[],
+): ReviewTeam[] {
+  const teams: ReviewTeam[] = [];
+  players.forEach((player, idx) => {
+    const key = player.team || "Team A";
+    let team = teams.find((t) => t.key === key);
+    if (!team) {
+      team = { key, displayName: key, score: 0, rows: [] };
+      teams.push(team);
+    }
+    team.rows.push({ player, idx });
+  });
+
+  for (const team of teams) {
+    team.score = team.rows.reduce((sum, r) => sum + (Number(r.player.points) || 0), 0);
+    const anyAssigned = team.rows.some((r) => isAssigned(r.player.name, allowedNames));
+    if (!anyAssigned) continue; // opponent / AI side keeps "Team A" / "Team B"
+    team.displayName = team.rows
+      .map((r, i) => {
+        const pos = r.player.position || POSITIONS[i] || "N/A";
+        if (isAssigned(r.player.name, allowedNames)) return `${r.player.name} (${pos})`;
+        const lc = r.player.name.toLowerCase();
+        if (lc.includes("ai") || lc.includes("al")) return `AI (${pos})`;
+        return `Random (${pos})`;
+      })
+      .join(" + ");
+  }
+  return teams;
+}
+
 interface UploadSessionValue {
   items: UploadItem[];
   selectedId: string | null;
@@ -75,12 +143,14 @@ interface UploadSessionValue {
   /** Appends valid image files to the batch. Returns how many were added. */
   addFiles: (files: FileList | File[] | null) => number;
   updatePlayerName: (idx: number, name: string) => void;
+  updateGrade: (idx: number, grade: string) => void;
   updateStat: (idx: number, key: keyof ExtractedPlayer, value: number) => void;
-  updateGameField: (key: keyof GameData, value: string | number) => void;
   retryItem: (id: string) => void;
   removeItem: (id: string) => void;
   startOver: () => void;
-  save: () => Promise<void>;
+  /** Assembles the final payload — composite team names, mapped player.team, summed scores —
+   *  from the current roster mappings, then saves. */
+  save: (allowedNames: string[]) => Promise<void>;
 }
 
 const UploadSessionContext = createContext<UploadSessionValue | null>(null);
@@ -139,7 +209,11 @@ export function UploadSessionProvider({ children }: { children: ReactNode }) {
                 ...i,
                 status: "ready",
                 uploadData: result,
-                players: result.extractedData.players ?? [],
+                players: (result.extractedData.players ?? []).map((p) => ({
+                  ...p,
+                  teammateGrade: p.teammateGrade ?? "",
+                  position: p.position ?? "",
+                })),
                 gameData: {
                   homeTeam: result.extractedData.homeTeam ?? "",
                   awayTeam: result.extractedData.awayTeam ?? "",
@@ -230,14 +304,17 @@ export function UploadSessionProvider({ children }: { children: ReactNode }) {
       players: i.players.map((p, k) => (k === idx ? { ...p, name } : p)),
     }));
 
+  const updateGrade = (idx: number, grade: string) =>
+    patchSelected((i) => ({
+      ...i,
+      players: i.players.map((p, k) => (k === idx ? { ...p, teammateGrade: grade } : p)),
+    }));
+
   const updateStat = (idx: number, key: keyof ExtractedPlayer, value: number) =>
     patchSelected((i) => ({
       ...i,
       players: i.players.map((p, k) => (k === idx ? { ...p, [key]: value } : p)),
     }));
-
-  const updateGameField = (key: keyof GameData, value: string | number) =>
-    patchSelected((i) => ({ ...i, gameData: { ...i.gameData, [key]: value } }));
 
   const retryItem = (id: string) => {
     processingRef.current.delete(id);
@@ -262,16 +339,33 @@ export function UploadSessionProvider({ children }: { children: ReactNode }) {
     setSelectedId(null);
   };
 
-  const save = async () => {
+  const save = async (allowedNames: string[]) => {
     const item = items.find((i) => i.id === selectedId);
     if (!item || !item.uploadData) return;
-    setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, status: "saving" } : i)));
+
+    // Derive the two sides' names + scores from the current assignments. The first side (Team A,
+    // slots 0-4) is home; the second is away. Each player's team is set to its side's display name
+    // so the p.team === game.homeTeam invariant the save/analytics path relies on holds.
+    const teams = computeReviewTeams(item.players, allowedNames);
+    const [home, away] = teams;
+    const gameData: GameData = {
+      homeTeam: home?.displayName ?? "Team A",
+      awayTeam: away?.displayName ?? "Team B",
+      homeScore: home?.score ?? 0,
+      awayScore: away?.score ?? 0,
+    };
+    const nameByKey = new Map(teams.map((t) => [t.key, t.displayName]));
+
+    setItems((prev) =>
+      prev.map((i) => (i.id === item.id ? { ...i, status: "saving", gameData } : i)),
+    );
     try {
       await api.post("/api/screenshots/save", {
-        gameData: item.gameData,
+        gameData,
         playersData: item.players.map((p) => ({
           name: p.name,
-          team: p.team,
+          team: nameByKey.get(p.team) ?? p.team,
+          teammateGrade: p.teammateGrade,
           points: p.points,
           rebounds: p.rebounds,
           assists: p.assists,
@@ -323,8 +417,8 @@ export function UploadSessionProvider({ children }: { children: ReactNode }) {
     select: (id: string) => setSelectedId(id),
     addFiles,
     updatePlayerName,
+    updateGrade,
     updateStat,
-    updateGameField,
     retryItem,
     removeItem,
     startOver,

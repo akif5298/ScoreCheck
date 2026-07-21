@@ -14,9 +14,10 @@ import { useAuth } from "@/contexts/auth-context";
 import { api } from "@/lib/api";
 import {
   useUploadSession,
+  computeReviewTeams,
   type ExtractedPlayer,
-  type GameData,
   type ItemStatus,
+  type ReviewTeam,
   type UploadItem,
 } from "@/contexts/upload-session";
 
@@ -46,8 +47,8 @@ function ReviewWorkspace() {
     select,
     addFiles,
     updatePlayerName,
+    updateGrade,
     updateStat,
-    updateGameField,
     retryItem,
     removeItem,
     startOver,
@@ -287,10 +288,10 @@ function ReviewWorkspace() {
                   <ReviewPane
                     item={selectedItem}
                     allowedNames={allowedNames}
-                    onGameField={updateGameField}
                     onPlayerName={updatePlayerName}
+                    onGrade={updateGrade}
                     onStat={updateStat}
-                    onSave={() => void save()}
+                    onSave={() => void save(allowedNames)}
                   />
                 )}
               </>
@@ -373,69 +374,40 @@ function ExtractingCard({ queued }: { queued: boolean }) {
 function ReviewPane({
   item,
   allowedNames,
-  onGameField,
   onPlayerName,
+  onGrade,
   onStat,
   onSave,
 }: {
   item: UploadItem;
   allowedNames: string[];
-  onGameField: (key: keyof GameData, value: string | number) => void;
   onPlayerName: (idx: number, name: string) => void;
+  onGrade: (idx: number, grade: string) => void;
   onStat: (idx: number, key: keyof ExtractedPlayer, value: number) => void;
   onSave: () => void;
 }) {
   const saving = item.status === "saving";
 
-  // Split the roster into its two teams so each shows as a clear group of players. Group by the
-  // players' own team string (which the save path expects to equal homeTeam/awayTeam), preserving
-  // each player's original index so the edit handlers still target the right row.
-  const groups: {
-    team: string;
-    score?: number;
-    rows: { player: ExtractedPlayer; idx: number }[];
-  }[] = [];
-  item.players.forEach((player, idx) => {
-    const team = player.team || "Unassigned";
-    let group = groups.find((g) => g.team === team);
-    if (!group) {
-      const score =
-        team === item.gameData.homeTeam
-          ? item.gameData.homeScore
-          : team === item.gameData.awayTeam
-            ? item.gameData.awayScore
-            : undefined;
-      group = { team, score, rows: [] };
-      groups.push(group);
-    }
-    group.rows.push({ player, idx });
-  });
+  // Two sides, named + scored live from the current assignments. The side with roster players
+  // auto-names itself as its lineup ("Akif (PG) + …"); the other stays "Team A"/"Team B". Scores
+  // are the sum of each side's points and update as stats change. See computeReviewTeams.
+  const teams = computeReviewTeams(item.players, allowedNames);
+  const [home, away] = teams;
 
   return (
     <div className="space-y-6">
       <Card>
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0">
             <Badge tone="success">Extracted · ready to review</Badge>
-            <div className="mt-3 flex flex-wrap items-center gap-4">
-              <EditableTeamScore
-                label="Home"
-                team={item.gameData.homeTeam}
-                score={item.gameData.homeScore}
-                onTeamChange={(v) => onGameField("homeTeam", v)}
-                onScoreChange={(v) => onGameField("homeScore", v)}
-              />
-              <span className="text-muted-foreground">vs</span>
-              <EditableTeamScore
-                label="Away"
-                team={item.gameData.awayTeam}
-                score={item.gameData.awayScore}
-                onTeamChange={(v) => onGameField("awayTeam", v)}
-                onScoreChange={(v) => onGameField("awayScore", v)}
-              />
+            <div className="mt-3 flex items-center gap-3">
+              <TeamScorePill team={home} fallback="Team A" />
+              <span className="font-mono text-xl text-muted-foreground">–</span>
+              <TeamScorePill team={away} fallback="Team B" reverse />
             </div>
             <p className="mt-2 text-sm text-muted-foreground">
-              Assign player names using the dropdowns. Tap any stat cell to correct.
+              Team names fill in from your roster as you assign players; scores total up live. Tap
+              any stat cell to correct.
             </p>
           </div>
           <button
@@ -457,18 +429,18 @@ function ReviewPane({
           >
             roster mappings
           </Link>
-          . Add gamertag → name mappings first so assigned stats count.
+          . Add gamertag → name mappings first so assigned stats count, and so your team names
+          itself.
         </div>
       )}
 
-      {groups.map((group) => (
+      {teams.map((team) => (
         <TeamStatsTable
-          key={group.team}
-          team={group.team}
-          score={group.score}
-          rows={group.rows}
+          key={team.key}
+          team={team}
           allowedNames={allowedNames}
           onPlayerName={onPlayerName}
+          onGrade={onGrade}
           onStat={onStat}
         />
       ))}
@@ -476,48 +448,72 @@ function ReviewPane({
   );
 }
 
+// Compact "score — team name" for the summary bar. reverse mirrors it for the away side.
+function TeamScorePill({
+  team,
+  fallback,
+  reverse = false,
+}: {
+  team?: ReviewTeam;
+  fallback: string;
+  reverse?: boolean;
+}) {
+  return (
+    <div className={`flex min-w-0 items-baseline gap-2 ${reverse ? "flex-row-reverse" : ""}`}>
+      <span className="font-mono text-3xl font-semibold tabular-nums">{team?.score ?? 0}</span>
+      <span
+        className="max-w-[14rem] truncate font-display text-sm font-semibold"
+        title={team?.displayName ?? fallback}
+      >
+        {team?.displayName ?? fallback}
+      </span>
+    </div>
+  );
+}
+
 function TeamStatsTable({
   team,
-  score,
-  rows,
   allowedNames,
   onPlayerName,
+  onGrade,
   onStat,
 }: {
-  team: string;
-  score?: number;
-  rows: { player: ExtractedPlayer; idx: number }[];
+  team: ReviewTeam;
   allowedNames: string[];
   onPlayerName: (idx: number, name: string) => void;
+  onGrade: (idx: number, grade: string) => void;
   onStat: (idx: number, key: keyof ExtractedPlayer, value: number) => void;
 }) {
   return (
-    <Card
-      title={team || "Team"}
-      hint={`${rows.length} players`}
-      action={
-        score !== undefined ? (
-          <span className="font-mono text-2xl font-semibold tabular-nums">{score}</span>
-        ) : undefined
-      }
-    >
+    <Card>
+      {/* Custom header (not Card's title, which uppercases) so a composite lineup name reads normally. */}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="stamp">{team.rows.length} players</div>
+          <div className="truncate font-display text-lg font-semibold" title={team.displayName}>
+            {team.displayName}
+          </div>
+        </div>
+        <span className="font-mono text-3xl font-semibold tabular-nums">{team.score}</span>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-strong text-left">
               <th className="stamp pb-2 pr-3 font-normal min-w-[140px]">Player</th>
-              {["PTS", "REB", "AST", "STL", "BLK", "TO", "PF"].map((h) => (
+              <th className="stamp px-1 pb-2 text-center font-normal">Grade</th>
+              {["PTS", "REB", "AST", "STL", "BLK", "FOULS", "TO"].map((h) => (
                 <th key={h} className="stamp px-1 pb-2 text-right font-normal">
                   {h}
                 </th>
               ))}
-              <th className="stamp px-1 pb-2 text-center font-normal">FG</th>
-              <th className="stamp px-1 pb-2 text-center font-normal">3P</th>
-              <th className="stamp px-1 pb-2 text-center font-normal">FT</th>
+              <th className="stamp px-1 pb-2 text-center font-normal">FGM/FGA</th>
+              <th className="stamp px-1 pb-2 text-center font-normal">3PM/3PA</th>
+              <th className="stamp px-1 pb-2 text-center font-normal">FTM/FTA</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {rows.map(({ player: p, idx }) => (
+            {team.rows.map(({ player: p, idx }) => (
               <tr key={idx} className="hover:bg-secondary/40">
                 <td className="py-2 pr-3">
                   <select
@@ -536,6 +532,9 @@ function TeamStatsTable({
                     )}
                   </select>
                 </td>
+                <td className="px-1 text-center">
+                  <GradeInput value={p.teammateGrade} onChange={(v) => onGrade(idx, v)} />
+                </td>
                 {(
                   [
                     "points",
@@ -543,8 +542,8 @@ function TeamStatsTable({
                     "assists",
                     "steals",
                     "blocks",
-                    "turnovers",
                     "fouls",
+                    "turnovers",
                   ] as const
                 ).map((k) => (
                   <td key={k} className="px-0.5 text-right">
@@ -630,35 +629,16 @@ function MadeAttempt({
   );
 }
 
-function EditableTeamScore({
-  label,
-  team,
-  score,
-  onTeamChange,
-  onScoreChange,
-}: {
-  label: string;
-  team: string;
-  score: number;
-  onTeamChange: (v: string) => void;
-  onScoreChange: (v: number) => void;
-}) {
+// Teammate grade is a short letter grade (A+, B-, …), correctable but rarely wrong.
+function GradeInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
-    <div className="flex items-baseline gap-2">
-      <span className="stamp">{label}</span>
-      <input
-        type="text"
-        value={team}
-        onChange={(e) => onTeamChange(e.target.value)}
-        className="w-28 rounded border border-border bg-background px-2 py-1 font-display text-sm font-semibold focus:border-foreground focus:outline-none"
-        placeholder="Team name"
-      />
-      <input
-        type="number"
-        value={score}
-        onChange={(e) => onScoreChange(Number(e.target.value))}
-        className="w-16 rounded border border-border bg-background px-2 py-1 font-mono text-2xl font-semibold tabular-nums focus:border-foreground focus:outline-none"
-      />
-    </div>
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      maxLength={3}
+      placeholder="—"
+      className="w-12 rounded border border-transparent bg-transparent px-1 py-1 text-center font-mono uppercase tracking-wide hover:border-border focus:border-foreground focus:outline-none"
+    />
   );
 }

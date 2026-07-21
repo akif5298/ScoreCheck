@@ -137,8 +137,6 @@ Verify: `npm test` · `npm run lint` · `npm run build:api` · `(cd client && np
   `awayTeam` so the lineup-efficiency query (`src/services/lineupEfficiency.ts`, joins on
   `p.team = g.homeTeam`) works. Game dates are **placeholders** in `IMG_####` (chronological)
   order — the screenshot mtimes were a useless bulk-copy timestamp.
-- **`scripts/assign-data-owner.ts`** (`npm run assign-owner`) — **superseded** by the import;
-  reassigns existing OCR games instead of importing labeled data. Don't use it now.
 
 Eval harness: `npm run eval -- --pipeline=ollama` (needs the model host). See `EVAL_RESULTS.md`
 and `FINETUNING_GUIDE.md` (note: FINETUNING_GUIDE's "Current status" table is stale).
@@ -188,8 +186,8 @@ is native, and it ships prebuilt libvips binaries for linux x64). If a Render bu
 - **`ALLOWED_PLAYER_NAMES` is gone** — anything player-list-driven must use the per-user mappings
   helper, not a hardcoded list.
 - **Prisma migrations**: Supabase has no shadow DB; author migrations with `prisma migrate diff`,
-  never `migrate dev`. History was baselined (`prisma/migrations/0_init` + `add_password_hash`);
-  old migrations archived in `prisma/migrations_archive/`.
+  never `migrate dev`. History was baselined (`prisma/migrations/0_init` + `add_password_hash`).
+  Pre-baseline migrations were removed; recover them from git history if ever needed.
 
 ---
 

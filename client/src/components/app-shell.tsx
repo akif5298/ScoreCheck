@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { useAuth } from "@/contexts/auth-context";
 import { SquadSwitcher } from "@/components/squad-switcher";
 
-const nav = [
+export const nav = [
   { to: "/", label: "Overview", code: "01" },
   { to: "/upload", label: "Upload", code: "02" },
   { to: "/games", label: "Games", code: "03" },

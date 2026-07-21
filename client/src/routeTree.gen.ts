@@ -21,7 +21,9 @@ import { Route as EvalRouteImport } from './routes/eval'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as UploadIndexRouteImport } from './routes/upload.index'
 import { Route as GamesIndexRouteImport } from './routes/games.index'
+import { Route as UploadReviewRouteImport } from './routes/upload.review'
 import { Route as JoinTokenRouteImport } from './routes/join.$token'
 import { Route as GamesGameIdRouteImport } from './routes/games.$gameId'
 
@@ -85,10 +87,20 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const UploadIndexRoute = UploadIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => UploadRoute,
+} as any)
 const GamesIndexRoute = GamesIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => GamesRoute,
+} as any)
+const UploadReviewRoute = UploadReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => UploadRoute,
 } as any)
 const JoinTokenRoute = JoinTokenRouteImport.update({
   id: '/join/$token',
@@ -113,10 +125,12 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
-  '/upload': typeof UploadRoute
+  '/upload': typeof UploadRouteWithChildren
   '/games/$gameId': typeof GamesGameIdRoute
   '/join/$token': typeof JoinTokenRoute
+  '/upload/review': typeof UploadReviewRoute
   '/games/': typeof GamesIndexRoute
+  '/upload/': typeof UploadIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -129,10 +143,11 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
-  '/upload': typeof UploadRoute
   '/games/$gameId': typeof GamesGameIdRoute
   '/join/$token': typeof JoinTokenRoute
+  '/upload/review': typeof UploadReviewRoute
   '/games': typeof GamesIndexRoute
+  '/upload': typeof UploadIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -147,10 +162,12 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/squad': typeof SquadRoute
   '/teams': typeof TeamsRoute
-  '/upload': typeof UploadRoute
+  '/upload': typeof UploadRouteWithChildren
   '/games/$gameId': typeof GamesGameIdRoute
   '/join/$token': typeof JoinTokenRoute
+  '/upload/review': typeof UploadReviewRoute
   '/games/': typeof GamesIndexRoute
+  '/upload/': typeof UploadIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -169,7 +186,9 @@ export interface FileRouteTypes {
     | '/upload'
     | '/games/$gameId'
     | '/join/$token'
+    | '/upload/review'
     | '/games/'
+    | '/upload/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -182,10 +201,11 @@ export interface FileRouteTypes {
     | '/settings'
     | '/squad'
     | '/teams'
-    | '/upload'
     | '/games/$gameId'
     | '/join/$token'
+    | '/upload/review'
     | '/games'
+    | '/upload'
   id:
     | '__root__'
     | '/'
@@ -202,7 +222,9 @@ export interface FileRouteTypes {
     | '/upload'
     | '/games/$gameId'
     | '/join/$token'
+    | '/upload/review'
     | '/games/'
+    | '/upload/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -217,7 +239,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   SquadRoute: typeof SquadRoute
   TeamsRoute: typeof TeamsRoute
-  UploadRoute: typeof UploadRoute
+  UploadRoute: typeof UploadRouteWithChildren
   JoinTokenRoute: typeof JoinTokenRoute
 }
 
@@ -307,12 +329,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/upload/': {
+      id: '/upload/'
+      path: '/'
+      fullPath: '/upload/'
+      preLoaderRoute: typeof UploadIndexRouteImport
+      parentRoute: typeof UploadRoute
+    }
     '/games/': {
       id: '/games/'
       path: '/'
       fullPath: '/games/'
       preLoaderRoute: typeof GamesIndexRouteImport
       parentRoute: typeof GamesRoute
+    }
+    '/upload/review': {
+      id: '/upload/review'
+      path: '/review'
+      fullPath: '/upload/review'
+      preLoaderRoute: typeof UploadReviewRouteImport
+      parentRoute: typeof UploadRoute
     }
     '/join/$token': {
       id: '/join/$token'
@@ -343,6 +379,19 @@ const GamesRouteChildren: GamesRouteChildren = {
 
 const GamesRouteWithChildren = GamesRoute._addFileChildren(GamesRouteChildren)
 
+interface UploadRouteChildren {
+  UploadReviewRoute: typeof UploadReviewRoute
+  UploadIndexRoute: typeof UploadIndexRoute
+}
+
+const UploadRouteChildren: UploadRouteChildren = {
+  UploadReviewRoute: UploadReviewRoute,
+  UploadIndexRoute: UploadIndexRoute,
+}
+
+const UploadRouteWithChildren =
+  UploadRoute._addFileChildren(UploadRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
@@ -355,7 +404,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   SquadRoute: SquadRoute,
   TeamsRoute: TeamsRoute,
-  UploadRoute: UploadRoute,
+  UploadRoute: UploadRouteWithChildren,
   JoinTokenRoute: JoinTokenRoute,
 }
 export const routeTree = rootRouteImport

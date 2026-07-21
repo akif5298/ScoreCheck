@@ -175,7 +175,9 @@ function AdminDashboardView({ selfId }: { selfId: string }) {
                           <Badge tone="outline">Member</Badge>
                         )}
                       </td>
-                      <td className="px-2 text-right font-mono tabular-nums">{u._count.uploadedGames}</td>
+                      <td className="px-2 text-right font-mono tabular-nums">
+                        {u._count.uploadedGames}
+                      </td>
                       <td className="px-6 py-3.5 text-right">
                         {isSelf ? (
                           <span className="text-xs text-muted-foreground">you</span>

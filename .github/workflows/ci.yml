@@ -24,11 +24,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Prisma resolves the datasource env() vars when it loads the schema (validate errors
+      # P1012 without them). These are dummy placeholders — generate/validate never connect —
+      # scoped to just these steps so the test/build steps are unaffected.
       - name: Generate Prisma client
         run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/scorecheck
+          DIRECT_DATABASE_URL: postgresql://user:password@localhost:5432/scorecheck
 
       - name: Validate Prisma schema
         run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://user:password@localhost:5432/scorecheck
+          DIRECT_DATABASE_URL: postgresql://user:password@localhost:5432/scorecheck
 
       - name: Lint
         run: npm run lint

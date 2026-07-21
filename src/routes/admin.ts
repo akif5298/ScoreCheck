@@ -23,7 +23,7 @@ router.get('/users', async (req, res) => {
         createdAt: true,
         _count: {
           select: {
-            games: true,
+            uploadedGames: true,
           },
         },
       },
@@ -50,7 +50,7 @@ router.get('/games', async (req, res) => {
   try {
     const games = await prisma.game.findMany({
       include: {
-        user: {
+        uploadedBy: {
           select: {
             id: true,
             email: true,
@@ -226,7 +226,7 @@ router.get('/dashboard', async (req, res) => {
       prisma.game.findMany({
         take: 10,
         include: {
-          user: {
+          uploadedBy: {
             select: {
               id: true,
               email: true,
@@ -246,12 +246,12 @@ router.get('/dashboard', async (req, res) => {
           name: true,
           _count: {
             select: {
-              games: true,
+              uploadedGames: true,
             },
           },
         },
         orderBy: {
-          games: {
+          uploadedGames: {
             _count: 'desc',
           },
         },

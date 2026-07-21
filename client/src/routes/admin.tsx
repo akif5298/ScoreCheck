@@ -31,7 +31,7 @@ interface AdminUser {
   name: string | null;
   role: "USER" | "ADMIN";
   createdAt: string;
-  _count: { games: number };
+  _count: { uploadedGames: number };
 }
 
 interface AdminGameUser {
@@ -51,13 +51,13 @@ interface AdminDashboard {
     homeScore: number;
     awayScore: number;
     createdAt: string;
-    user: AdminGameUser;
+    uploadedBy: AdminGameUser;
   }>;
   topUsers: Array<{
     id: string;
     email: string;
     name: string | null;
-    _count: { games: number };
+    _count: { uploadedGames: number };
   }>;
 }
 
@@ -175,7 +175,7 @@ function AdminDashboardView({ selfId }: { selfId: string }) {
                           <Badge tone="outline">Member</Badge>
                         )}
                       </td>
-                      <td className="px-2 text-right font-mono tabular-nums">{u._count.games}</td>
+                      <td className="px-2 text-right font-mono tabular-nums">{u._count.uploadedGames}</td>
                       <td className="px-6 py-3.5 text-right">
                         {isSelf ? (
                           <span className="text-xs text-muted-foreground">you</span>
@@ -267,7 +267,7 @@ function AdminDashboardView({ selfId }: { selfId: string }) {
                     )}
                   </div>
                   <div className="stamp mt-1">
-                    {g.user.name ?? g.user.email} ·{" "}
+                    {g.uploadedBy.name ?? g.uploadedBy.email} ·{" "}
                     {new Date(g.createdAt).toLocaleDateString(undefined, {
                       month: "short",
                       day: "numeric",

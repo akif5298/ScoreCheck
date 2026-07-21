@@ -1188,6 +1188,49 @@ export class SupabaseService {
       client.release();
     }
   }
+
+  /**
+   * Unrestricted game delete for the admin route. No squad scoping and no uploader/owner
+   * check — `requireAdmin` already gates the caller, and an admin acts across all squads.
+   * Mirrors deleteGameForSquad's transactional shape (FOR UPDATE, cascade delete) and returns
+   * the game's squadId so the caller can rebuild that squad's aggregates and remove the
+   * screenshot, exactly as the member delete path does.
+   */
+  async deleteGameById(
+    gameId: string,
+  ): Promise<
+    | { outcome: 'deleted'; squadId: string; screenshotUrl: string | null }
+    | { outcome: 'not_found' }
+  > {
+    const client = await pgPool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const found = await client.query<{ squadId: string; screenshotUrl: string | null }>(
+        `SELECT "squadId", "screenshotUrl" FROM games WHERE id = $1 FOR UPDATE`,
+        [gameId],
+      );
+      const game = found.rows[0];
+      if (!game) {
+        await client.query('ROLLBACK');
+        return { outcome: 'not_found' };
+      }
+
+      await client.query(`DELETE FROM games WHERE id = $1`, [gameId]);
+      await client.query('COMMIT');
+      return { outcome: 'deleted', squadId: game.squadId, screenshotUrl: game.screenshotUrl };
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackErr) {
+        logger.error({ err: rollbackErr }, 'Rollback failed after admin game delete error');
+      }
+      logger.error({ err: error, gameId }, 'Error deleting game (admin)');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 export default new SupabaseService();

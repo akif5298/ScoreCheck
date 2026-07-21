@@ -26,10 +26,20 @@ jest.mock('@/middleware/auth', () => ({
   }),
 }));
 
+jest.mock('@/services/supabase', () => ({
+  __esModule: true,
+  default: {
+    deleteGameById: jest.fn(),
+    deleteImage: jest.fn(),
+    recomputeSquadAggregates: jest.fn(),
+  },
+}));
+
 import request from 'supertest';
 import express from 'express';
 import { prisma } from '@/services/database';
 import { authenticateToken } from '@/middleware/auth';
+import supabaseService from '@/services/supabase';
 import adminRouter from '@/routes/admin';
 
 const mockedPrisma = jest.mocked(prisma, { shallow: true });
@@ -97,23 +107,45 @@ describe('GET /games', () => {
 
 describe('DELETE /games/:gameId', () => {
   it('returns 404 when the game does not exist', async () => {
-    (mockedPrisma.game.findUnique as jest.Mock).mockResolvedValue(null);
+    (supabaseService.deleteGameById as jest.Mock).mockResolvedValue({ outcome: 'not_found' });
 
     const res = await request(app).delete('/games/missing-game');
 
     expect(res.status).toBe(404);
-    expect(mockedPrisma.game.delete).not.toHaveBeenCalled();
+    expect(supabaseService.deleteImage).not.toHaveBeenCalled();
+    expect(supabaseService.recomputeSquadAggregates).not.toHaveBeenCalled();
   });
 
-  it('returns 200 and deletes the game when it exists', async () => {
-    (mockedPrisma.game.findUnique as jest.Mock).mockResolvedValue({ id: 'g1' });
-    (mockedPrisma.game.delete as jest.Mock).mockResolvedValue({ id: 'g1' });
+  it('returns 200, removes the screenshot, and rebuilds the squad aggregates', async () => {
+    (supabaseService.deleteGameById as jest.Mock).mockResolvedValue({
+      outcome: 'deleted',
+      squadId: 'squad-1',
+      screenshotUrl: 'squad-1-import-1-boxscore.jpg',
+    });
 
     const res = await request(app).delete('/games/g1');
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(mockedPrisma.game.delete).toHaveBeenCalledWith({ where: { id: 'g1' } });
+    expect(supabaseService.deleteGameById).toHaveBeenCalledWith('g1');
+    expect(supabaseService.deleteImage).toHaveBeenCalledWith('squad-1-import-1-boxscore.jpg');
+    // The point of this fix: deleting a game rebuilds its squad's totals, so admin deletes
+    // no longer leave aggregates overstated.
+    expect(supabaseService.recomputeSquadAggregates).toHaveBeenCalledWith('squad-1');
+  });
+
+  it('skips storage removal when the game has no screenshot but still rebuilds aggregates', async () => {
+    (supabaseService.deleteGameById as jest.Mock).mockResolvedValue({
+      outcome: 'deleted',
+      squadId: 'squad-2',
+      screenshotUrl: null,
+    });
+
+    const res = await request(app).delete('/games/g2');
+
+    expect(res.status).toBe(200);
+    expect(supabaseService.deleteImage).not.toHaveBeenCalled();
+    expect(supabaseService.recomputeSquadAggregates).toHaveBeenCalledWith('squad-2');
   });
 });
 

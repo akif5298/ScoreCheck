@@ -13,7 +13,7 @@ import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { getMembership } from '@/services/squadService';
 import { ApiResponse, Game, Player } from '@/types';
 import { classifyScreenshot } from '@/services/junkFilter';
-import { assertExtractionHostReachable } from '@/services/ollamaExtractor';
+import { assertExtractionHostReachable, warmupModel } from '@/services/ollamaExtractor';
 import {
   computePerceptualHash,
   hammingDistance,
@@ -70,6 +70,22 @@ const uploadRateLimit = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req: Request) => req.user?.userId ?? 'anonymous',
   message: { success: false, error: 'Too many uploads. Please wait a minute and try again.' },
+});
+
+// Lightweight limiter for the warmup poke. Generous — a warmup is cheap and
+// idempotent — but bounded so a client bug or bad actor can't hammer the GPU host.
+// Kept separate from uploadRateLimit so warming never eats into a user's actual
+// upload allowance.
+const warmupRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.user?.userId ?? 'anonymous',
+  // A throttled warmup is a no-op, not an error — the host is already warm (or
+  // warming) from the earlier poke. Answer 202 so the fire-and-forget client stays quiet.
+  handler: (_req: Request, res: Response) =>
+    res.status(202).json({ success: true, message: 'Already warming' } as ApiResponse),
 });
 
 // Per-user daily extraction quota. In-memory (single-instance only, like
@@ -162,6 +178,21 @@ const upload = multer({
 
 
 // Upload and process multiple box score screenshots for review
+// Warm the extraction host ahead of a real upload. The client pokes this when the
+// upload page mounts, so Modal's scale-to-zero cold start (~70-85s: container boot +
+// loading both models into VRAM) overlaps with the user picking and reviewing files
+// instead of stalling the first extraction's preflight.
+//
+// Fire-and-forget: respond 202 immediately and let warmupModel() run in the
+// background. It's best-effort and never rejects, so nothing here can fail the request.
+// Waking the host also triggers Modal's @enter, which preloads both the OCR and
+// junk-filter models — one poke covers the whole pipeline. No squad scope needed
+// (this touches no data); no extraction quota (it runs no inference on a screenshot).
+router.post('/warmup', authenticateToken, warmupRateLimit, (_req: Request, res: Response) => {
+  void warmupModel();
+  res.status(202).json({ success: true, message: 'Warming extraction host' } as ApiResponse);
+});
+
 router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit, extractionQuota, upload.array('screenshots', 10), async (req: Request, res: Response) => {
   try {
     const files = req.files as Express.Multer.File[];

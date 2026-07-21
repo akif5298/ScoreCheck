@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '@/services/database';
+import supabaseService from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
 import { requireAdmin } from '@/middleware/admin';
 import { ApiResponse } from '@/types';
@@ -78,25 +79,42 @@ router.get('/games', async (req, res) => {
   }
 });
 
-// Delete a game (admin can delete any game)
+// Delete a game (admin can delete any game, in any squad)
 router.delete('/games/:gameId', async (req, res) => {
   try {
     const { gameId } = req.params;
 
-    const game = await prisma.game.findUnique({
-      where: { id: gameId },
-    });
+    const result = await supabaseService.deleteGameById(gameId!);
 
-    if (!game) {
+    if (result.outcome === 'not_found') {
       return res.status(404).json({
         success: false,
         error: 'Game not found',
       } as ApiResponse);
     }
 
-    await prisma.game.delete({
-      where: { id: gameId },
-    });
+    // Past the commit: the game is gone regardless of what follows. Both cleanups are
+    // non-transactional, so a failure in either is logged and still reported as success —
+    // the delete itself succeeded. Mirrors the member delete path in screenshots.ts.
+    if (result.screenshotUrl) {
+      try {
+        await supabaseService.deleteImage(result.screenshotUrl);
+      } catch (storageErr) {
+        logger.error(
+          { err: storageErr, gameId, screenshotUrl: result.screenshotUrl },
+          'Game deleted but its screenshot could not be removed from storage',
+        );
+      }
+    }
+
+    try {
+      await supabaseService.recomputeSquadAggregates(result.squadId);
+    } catch (aggregateErr) {
+      logger.error(
+        { err: aggregateErr, gameId, squadId: result.squadId },
+        'Game deleted but squad aggregate rebuild failed — totals are stale until the next write',
+      );
+    }
 
     return res.json({
       success: true,

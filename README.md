@@ -34,7 +34,7 @@ Upload (JPEG / PNG)
   Junk filter ─────── Ollama minicpm-v:latest; fails open if offline
         │             → 422 if image is clearly not a box score
         ▼
-  VLM extraction ──── fine-tuned Qwen2.5-VL (self-hosted, OLLAMA_BASE_URL)
+  VLM extraction ──── fine-tuned Qwen2.5-VL (Ollama on Modal, OLLAMA_BASE_URL)
         │             team-half crops (5 players each) → per-row retry
         │             for misses → full-image fallback
         │             → 503 if the extraction host is unreachable
@@ -64,12 +64,12 @@ Upload (JPEG / PNG)
 | Styling | Tailwind CSS 4 · Radix UI · shadcn/ui |
 | Charts | Recharts 2 |
 | Auth | Email/password · bcrypt · JWT (invite-gated signup) |
-| Stat extraction | Ollama-compatible endpoint · fine-tuned Qwen2.5-VL (self-hosted) |
+| Stat extraction | Ollama-compatible endpoint · fine-tuned Qwen2.5-VL (hosted on Modal, serverless GPU) |
 | Junk filter | Ollama · minicpm-v:latest |
 | Image processing | sharp (crops/scaling) |
 | Logging | pino / pino-http (structured JSON) |
 | Fine-tuning | Python · Unsloth QLoRA (see [FINETUNING_GUIDE.md](FINETUNING_GUIDE.md)) |
-| Hosting | Render (Docker) · Supabase (DB + storage) |
+| Hosting | Render (Docker, API + SPA) · Supabase (DB + storage) · Modal (serverless GPU for extraction) |
 
 ## Multi-User Architecture
 
@@ -156,6 +156,7 @@ Copy `env.example` to `.env`. Variables marked **Required** must be set or the s
 | `OLLAMA_BASE_URL` | No | Extraction/junk-filter host (default `http://localhost:11434`). Uploads return `503` if unreachable |
 | `OLLAMA_EXTRACTION_MODEL` | No | Extraction model tag (default `scorecheck-ocr-r5:latest`) |
 | `OLLAMA_API_KEY` | No | Sent as `Authorization: Bearer` to the extraction host when set (for a secured/hosted endpoint) |
+| `EXTRACTION_PREFLIGHT_TIMEOUT_MS` | No | Liveness pre-flight timeout before each upload (default `3000`). Raise to `~120000` for a scale-to-zero host (Modal) so the first request waits through a cold start instead of failing into a `503` |
 | `EXTRACTION_DAILY_LIMIT` | No | Per-user screenshots processed per day (default `50`) |
 | `PORT` | No | Server port (default `3001`) |
 | `NODE_ENV` | No | `development` or `production` |
@@ -274,10 +275,25 @@ The app is deployed as a single Docker container on **Render**, backed by **Supa
 ### Render setup
 
 1. Create a Render Web Service from this repo (Docker). Health check path: `/health`.
-2. Set environment variables (see [above](#environment-variables)) — `DATABASE_URL` (pooler `6543`, `?pgbouncer=true`), `DIRECT_DATABASE_URL` (`5432`), Supabase URL/keys, a fresh `JWT_SECRET`, `INVITE_CODE`, `NODE_ENV=production`, and the `OLLAMA_*` host once your fine-tuned model is deployed.
+2. Set environment variables (see [above](#environment-variables)) — `DATABASE_URL` (pooler `6543`, `?pgbouncer=true`), `DIRECT_DATABASE_URL` (`5432`), Supabase URL/keys, a fresh `JWT_SECRET`, `INVITE_CODE`, `NODE_ENV=production`, and the `OLLAMA_*` vars pointing at the extraction host (see [Extraction host (Modal)](#extraction-host-modal)).
 3. Deploy. The container applies migrations on boot and serves the SPA + API on `$PORT`.
 4. Create the private `screenshots` bucket in Supabase Storage if it does not exist.
-5. Until the extraction model is hosted, uploads surface a clean "extraction service unavailable" state; everything else (auth, manual review edits, analytics) works.
+5. If the extraction host is ever unreachable, uploads surface a clean "extraction service unavailable" `503`; everything else (auth, manual review edits, analytics) keeps working.
+
+### Extraction host (Modal)
+
+The fine-tuned Qwen2.5-VL extractor and the `minicpm-v` junk filter run on **Modal** — Ollama in a
+serverless GPU container that **wakes on request and scales to zero when idle**, so it's effectively
+free at personal volume (Modal's $30/mo credit) and runs on a real GPU. A bearer-token proxy sits in
+front (plain Ollama has no auth); the app authenticates with `OLLAMA_API_KEY`.
+
+Because the container scales to zero, the **first** upload after an idle period waits ~70–90 s while
+Modal boots the GPU and loads both models — which is why `EXTRACTION_PREFLIGHT_TIMEOUT_MS` is raised
+to `120000` on the app, so that wake is absorbed by the pre-flight rather than failing into a `503`.
+Uploads within the container's idle window are hot.
+
+One-time setup and deploy steps (container image, model Volume, build, deploy, env wiring) are in
+[`deploy/modal/README.md`](deploy/modal/README.md).
 
 ### Local production build
 
@@ -326,7 +342,6 @@ prisma/               Database schema and migrations
 Not included in the current version, in rough priority order:
 
 - **Password reset & email verification** — via a transactional email provider (e.g. Resend/Brevo); token tables and the forgot/reset flow.
-- **Hosted extraction model** — provision the fine-tuned Qwen2.5-VL behind a stable, authenticated endpoint (`OLLAMA_BASE_URL` + `OLLAMA_API_KEY`).
 - **Asynchronous extraction** — move OCR off the request path into a job queue so uploads don't block, enabling horizontal scaling (the current in-memory dedup/quota state assumes a single instance).
 - **Self-service roster onboarding** — richer first-run guidance for creating mappings.
 ```

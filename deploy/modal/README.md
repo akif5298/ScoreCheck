@@ -39,6 +39,16 @@ modal volume put scorecheck-gguf Modelfile-r5 /Modelfile-r5
 modal volume put scorecheck-gguf scorecheck-ocr-r5_gguf /scorecheck-ocr-r5_gguf
 ```
 
+> ⚠️ **On Windows, run these `volume put` commands in PowerShell, NOT Git Bash.** Git Bash's
+> MSYS layer rewrites a leading-slash argument like `/Modelfile-r5` into a Windows path
+> (`C:/Program Files/Git/...`), so the files land under a bogus `C:` directory *inside the
+> volume* instead of at its root — and `ollama create` (which runs at the root) then fails with
+> `no Modelfile or safetensors files found`. PowerShell doesn't do this rewriting. In PowerShell
+> the launcher is `.\venv\Scripts\modal.exe` (the CLI lives in the project venv). If you must use
+> Git Bash, prefix with `MSYS_NO_PATHCONV=1` to disable the rewriting. Verify with
+> `modal volume ls scorecheck-gguf` — you should see `Modelfile-r5` and `scorecheck-ocr-r5_gguf`
+> at the root, never a `C:` entry.
+
 `minicpm-v` is **not** uploaded — the build pulls it from Ollama's registry.
 
 ---

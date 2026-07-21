@@ -41,7 +41,9 @@ token_secret = modal.Secret.from_name("scorecheck-ocr-token")
 
 image = (
     modal.Image.from_registry("nvidia/cuda:12.4.0-runtime-ubuntu22.04", add_python="3.11")
-    .apt_install("curl")
+    # zstd: the Ollama install script now ships zstd-compressed archives and aborts
+    # without it; the CUDA base image doesn't include it. curl: fetches the installer.
+    .apt_install("curl", "zstd")
     .run_commands("curl -fsSL https://ollama.com/install.sh | sh")
     .pip_install("fastapi[standard]==0.115.*", "httpx==0.27.*")
     .env({"OLLAMA_HOST": f"127.0.0.1:{OLLAMA_PORT}", "OLLAMA_MAX_LOADED_MODELS": "2"})

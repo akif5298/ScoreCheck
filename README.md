@@ -1,19 +1,21 @@
 # ScoreCheck
 
-A multi-user NBA 2K26 box score tracker. Sign up, upload a post-game screenshot, confirm the auto-extracted stats, and track your friend group's performance over time. Every account is fully isolated — your games, roster mappings, and analytics are yours alone.
+A multi-user NBA 2K26 box score tracker built around **squads** — groups of friends who share one pool of games, roster mappings, and analytics. Sign up, join or create a squad, upload a post-game screenshot, confirm the auto-extracted stats, and track the group's performance over time. One person uploads a game and everyone in the squad sees it; the same screenshot uploaded by a second member is deduped, not duplicated. Every account also gets a private personal squad, so solo use still works.
 
 ## Features
 
 - **Email/password accounts**: Invite-gated signup, bcrypt-hashed passwords, JWT sessions, in-app password change
-- **Per-user data isolation**: Every game, player, team, and stat row is scoped to the account that created it
-- **Screenshot upload**: Drop a box score screenshot and stats are extracted automatically
-- **OCR review UI**: Confirm or correct extracted stats before saving
-- **Roster mappings**: Map in-game gamertags to friend names once; extraction rewrites them automatically and their running totals accrue
+- **Squads**: Every account gets a personal squad on signup; create shared squads and switch the active scope from the sidebar. All data is squad-scoped — games, players, teams, stats, and roster mappings belong to a squad, not an individual
+- **Invites & join**: Owners mint reusable invite links (TTL + max-uses, revocable). A valid invite also satisfies the signup gate, so one link both admits a new account and joins the squad. Join → identify yourself on the roster (claims a roster entry to you)
+- **Move games between squads**: Bulk-select games and move them into another squad; player names re-resolve through the target roster and composite lineup strings rebuild, with a merge guard
+- **Screenshot upload**: Drop one or several box score screenshots on `/upload`; each extracts in the background and you review them on a dedicated `/upload/review` workspace
+- **Review workspace**: Per-file image preview, editable stats (incl. teammate grades and FG/3P/FT made-attempted), each side auto-named as its composite lineup (`Akif (PG) + …`), team scores summed live from player points
+- **Roster mappings**: Map in-game gamertags to friend names once per squad; extraction rewrites them automatically and their running totals accrue
 - **Dashboard**: Game highs, recent games, and per-player stat trends
-- **Player analytics**: Per-player averages across all your tracked games
+- **Player analytics**: Per-player averages across the squad's tracked games
 - **Team standings**: Win/loss records with shooting percentages
 - **Lineup efficiency**: Groups of 5 players ranked by average point differential
-- **Admin dashboard**: Manage users, games, and roles across the whole instance
+- **Admin dashboard**: Manage users, games, and roles across the whole instance (user management only — not a cross-squad data backdoor)
 - **Eval harness**: Reproducible field-level OCR accuracy measurement (`npm run eval`)
 
 ## Upload Pipeline
@@ -22,13 +24,13 @@ A multi-user NBA 2K26 box score tracker. Sign up, upload a post-game screenshot,
 Upload (JPEG / PNG)
         │
         ▼
-  Auth gate ──────── JWT verified; per-user rate limit + daily extraction quota
+  Auth gate ──────── JWT verified; active squad resolved; per-user rate limit + daily quota
         │
         ▼
   MIME check ─────── magic-byte validation via multer (in-memory)
         │
         ▼
-  Perceptual hash ── 16×16 dhash; rejects re-uploads (Hamming ≤ 10)
+  Perceptual hash ── 16×16 dhash; rejects re-uploads squad-wide (Hamming ≤ 10)
         │
         ▼
   Junk filter ─────── Ollama minicpm-v:latest; fails open if offline
@@ -39,18 +41,18 @@ Upload (JPEG / PNG)
         │             for misses → full-image fallback
         │             → 503 if the extraction host is unreachable
         ▼
-  Gamertag mapping ── per-user gamertag → display-name rewrite
+  Gamertag mapping ── per-squad gamertag → display-name rewrite
         │
         ▼
   Object storage ──── screenshot uploaded to Supabase Storage; object PATH
         │             persisted (signed URLs are minted fresh at read time)
         ▼
-  Review UI ───────── user confirms or edits extracted stats
-        │
+  Review workspace ── /upload/review: per-file image + editable stats (grades,
+        │             FG/3P/FT), squad side auto-named, scores summed live
         ▼
-  Atomic save ─────── pooled Postgres transaction: game + players + teams,
-                      then player_totals / player_stats recomputed for the
-                      user's mapped display names
+  Atomic save ─────── pooled Postgres transaction: game + players + teams (with a
+                      squad advisory-lock dedup re-check), then player_totals /
+                      player_stats recomputed for the squad's mapped display names
 ```
 
 ## Tech Stack
@@ -71,9 +73,25 @@ Upload (JPEG / PNG)
 | Fine-tuning | Python · Unsloth QLoRA (see [FINETUNING_GUIDE.md](FINETUNING_GUIDE.md)) |
 | Hosting | Render (Docker, API + SPA) · Supabase (DB + storage) · Modal (serverless GPU for extraction) |
 
-## Multi-User Architecture
+## Squad Architecture
 
-ScoreCheck is a single deployment shared by many isolated accounts.
+ScoreCheck is a single deployment shared by many **squads**. A squad is the unit of ownership and access: all game data belongs to a squad, and a user sees a squad's data only while they are a member of it and it is their active scope.
+
+### Squads & membership
+
+- **Every user gets a personal squad on signup** (a squad of one), created atomically with the account. "Personal" is just a squad you're the only member of, so solo and shared use share one code path.
+- All domain data (`games`, `players`, `teams`, `player_stats`, `player_totals`, `player_mappings`) is scoped by `squadId`. `games` also keep `uploadedByUserId` for attribution and delete/move permission — it is **not** the access-control key.
+- Membership carries a **role** (`OWNER` / `MEMBER`). Owners manage invites, membership, and squad settings; any member can upload and edit. **Delete** or **move a game out** requires being the game's uploader or a squad owner.
+- The **active squad** is resolved per request from the DB (never baked into the JWT, which has no revocation): the client sends `X-Squad-Id` (persisted in `localStorage`, seeded from `user.activeSquadId`), validated against membership, falling back to `activeSquadId`.
+- Dedup is **squad-wide**: the second member to upload the same screenshot gets the existing game back, not a duplicate (perceptual hash + an advisory-lock re-check inside the save transaction to close the concurrent-save race).
+- The global `ADMIN` role covers **user management only** — it grants no cross-squad data access. An owner sees only their own squads.
+
+### Invites & joining
+
+- Owners generate **reusable invite links** — random `base64url` tokens with a TTL (7-day default) and an optional max-uses cap, revocable immediately.
+- The invite preview (`GET /api/squads/invites/:token`) is the only unauthenticated endpoint; it returns an identical `404` for unknown/expired/revoked/exhausted so they can't be told apart.
+- A valid invite token **satisfies the `INVITE_CODE` signup gate**, so one link both admits a new account and joins the squad — no second secret to hand out.
+- After joining, the **identify** step claims a roster entry to you (`player_mappings.linkedUserId`), which is what a future cross-squad career view will key on.
 
 ### Authentication
 
@@ -83,19 +101,19 @@ ScoreCheck is a single deployment shared by many isolated accounts.
 - Login failures return an identical `401 Invalid email or password` for unknown emails, wrong passwords, and password-less legacy rows, with a constant-time bcrypt comparison so response timing does not leak whether an account exists.
 - There is **no** Apple Sign-In, email verification, or password reset in this version (see [Roadmap](#roadmap)).
 
-### Per-user data scoping
+### Squad-scoped data
 
-Every domain table (`games`, `players`, `teams`, `player_stats`, `player_totals`, `player_mappings`) carries a `userId`/`userid` column. All read and write queries filter on the authenticated user, and game-mutating routes (`start-edit`, update, screenshot fetch) verify ownership — requesting another user's game returns `404`, never their data.
+Every domain table (`games`, `players`, `teams`, `player_stats`, `player_totals`, `player_mappings`) carries a `squadId` column, and all read/write queries filter on the request's active squad. Game-mutating routes (update, delete, move, screenshot fetch) verify the game belongs to that squad — a game in another squad returns `404`, never its data. Aggregates (`player_totals` → `player_stats`) are recomputed from the raw `players` rows for the affected squad(s) after every save, edit, and move via `recomputeSquadAggregates`, so there is no incremental-delta drift.
 
 ### Roster mappings drive analytics
 
-Running totals and analytics are computed **only** for a user's mapped display names — the `displayName` values in their `player_mappings`. Map a gamertag (e.g. `GRIM_AR15`) to a friend (`Akif`) on the Roster page, and:
+Running totals and analytics are computed **only** for a squad's mapped display names — the `displayName` values in that squad's `player_mappings`. Map a gamertag (e.g. `GRIM_AR15`) to a friend (`Akif`) on the Roster page, and:
 
 1. Future extractions rewrite that gamertag to `Akif` automatically.
 2. Existing player rows for that gamertag are retroactively renamed.
 3. `Akif`'s `player_totals` accrue on every save; `player_stats` averages rebuild from those totals.
 
-A user with no mappings simply sees empty totals until they add some — the Roster page is the onboarding step.
+Mappings are per-squad and are **not** carried when a game moves between squads, so a moved game's names re-resolve through the target squad's roster. A squad with no mappings sees empty totals until it adds some — the Roster page is the onboarding step. (When a squad is created, its roster is seeded from the creator's personal mappings so the first bulk move needs no renaming.)
 
 ### Screenshot storage
 
@@ -169,7 +187,7 @@ Copy `env.example` to `.env`. Variables marked **Required** must be set or the s
 
 ## API Endpoints
 
-All endpoints except `/health` and the signup/login routes require `Authorization: Bearer <token>`.
+All endpoints except `/health`, the signup/login routes, and the public invite preview (`GET /api/squads/invites/:token`) require `Authorization: Bearer <token>`. Squad-scoped reads/writes also resolve an active squad (via `X-Squad-Id` or `activeSquadId`).
 
 ### Auth
 
@@ -184,21 +202,39 @@ All endpoints except `/health` and the signup/login routes require `Authorizatio
 
 | Method | Path | Description |
 |---|---|---|
+| `POST` | `/api/screenshots/warmup` | Wake the extraction host (fire-and-forget) so its cold start overlaps with picking files |
 | `POST` | `/api/screenshots/upload` | Upload one screenshot; returns OCR-extracted stats for review |
 | `POST` | `/api/screenshots/upload-multiple` | Upload up to 10 screenshots |
-| `POST` | `/api/screenshots/save` | Confirm reviewed stats; atomically saves game, players, and teams |
-| `GET` | `/api/screenshots/games` | List your games |
-| `GET` | `/api/screenshots/games/:gameId` | Full box score for one of your games |
+| `POST` | `/api/screenshots/save` | Confirm reviewed stats; atomically saves game, players, and teams (squad-wide dedup) |
+| `GET` | `/api/screenshots/games` | List the active squad's games |
+| `GET` | `/api/screenshots/games/:gameId` | Full box score for a game in the active squad |
 | `GET` | `/api/screenshots/games/:gameId/screenshot` | Fresh signed URL for the game's stored screenshot |
-| `POST` | `/api/screenshots/games/:gameId/start-edit` | Begin an edit (subtracts current stats from totals) |
-| `PUT` | `/api/screenshots/games/:gameId` | Replace a game's players and rebuild totals |
-| `POST` | `/api/screenshots/generate-team-names` | Suggest team names from assigned display names |
+| `PUT` | `/api/screenshots/games/:gameId` | Replace a game's players and rebuild the squad's totals |
+| `DELETE` | `/api/screenshots/games/:gameId` | Delete a game (uploader or squad `OWNER`); removes the screenshot and recomputes aggregates |
+| `POST` | `/api/screenshots/generate-team-names` | Suggest composite team names from assigned display names |
+
+### Squads
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/squads` | List the caller's squads (with `isActive` + game counts) |
+| `POST` | `/api/squads` | Create a squad (seeds its roster from the creator's personal mappings) |
+| `POST` | `/api/squads/:squadId/activate` | Set the active squad |
+| `GET` | `/api/squads/:squadId/members` | List members (role + attribution) |
+| `GET` | `/api/squads/:squadId/roster` | Squad roster (mappings + claimed identities) |
+| `POST` | `/api/squads/:squadId/roster/claim` | Claim/move a roster entry to yourself (`linkedUserId`) |
+| `GET` | `/api/squads/:squadId/invites` | List invite links (`OWNER`) |
+| `POST` | `/api/squads/:squadId/invites` | Create an invite link (`OWNER`) |
+| `DELETE` | `/api/squads/:squadId/invites/:inviteId` | Revoke an invite (`OWNER`) |
+| `GET` | `/api/squads/invites/:token` | Public invite preview (unauthenticated, rate-limited) |
+| `POST` | `/api/squads/join/:token` | Join a squad via invite token |
+| `POST` | `/api/squads/:squadId/games/move` | Move games into this squad (re-resolves names, recomputes both scopes) |
 
 ### Roster mappings
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/api/mappings` | List your gamertag → display-name mappings |
+| `GET` | `/api/mappings` | List the active squad's gamertag → display-name mappings |
 | `POST` | `/api/mappings` | Create a mapping (retroactively renames existing rows) |
 | `PUT` | `/api/mappings/:id` | Update a mapping |
 | `DELETE` | `/api/mappings/:id` | Delete a mapping |
@@ -328,12 +364,16 @@ The production extractor is a fine-tuned Qwen2.5-VL model (team-half crops with 
 ```
 src/                  Backend — Express routes, services, middleware
   config/env.ts       Boot-time environment validation (zod)
-  routes/             auth · screenshots · analytics · mappings · admin
+  routes/             auth · screenshots · analytics · mappings · admin · squads
   services/           authService · supabase (pg pool + storage) · OCR pipeline
-  middleware/         authenticateToken · requireAdmin
+                      squadService · gameMoveService
+  middleware/         authenticateToken · requireAdmin · resolveSquad (active-scope resolution)
 client/               Frontend — React 19 / TanStack Router / TanStack Start
+  routes/             upload (dropzone) · upload.review (workspace) · squad · join.$token · …
+  contexts/           auth · squad (active scope) · upload-session (batch + review state)
+deploy/modal/         Serverless-GPU OCR host (Ollama on Modal) + setup README
 eval/                 Extraction accuracy benchmark harness and labeled dataset
-scripts/              Fine-tuning data pipeline + assign-data-owner migration
+scripts/              Fine-tuning data pipeline + squad/backfill migration scripts
 prisma/               Database schema and migrations
 ```
 
@@ -341,6 +381,10 @@ prisma/               Database schema and migrations
 
 Not included in the current version, in rough priority order:
 
+- **Leave / remove member** — with copy-back so a departing member keeps their own uploads and the squad's shared history stays intact (a keep-in-squad / remove prompt on leave).
+- **Cross-squad career view** — aggregate a signed-in user's own stats across every squad they belong to, keyed on the roster `linkedUserId`, deduped by `imageHash`.
+- **Concurrent-edit protection** — a soft edit lease per game plus an `updatedAt` version check, so two members fixing the same shared game don't clobber each other.
+- **Squad audit log** — who changed/added/removed what, written in the same transaction as the mutation.
 - **Password reset & email verification** — via a transactional email provider (e.g. Resend/Brevo); token tables and the forgot/reset flow.
 - **Asynchronous extraction** — move OCR off the request path into a job queue so uploads don't block, enabling horizontal scaling (the current in-memory dedup/quota state assumes a single instance).
 - **Self-service roster onboarding** — richer first-run guidance for creating mappings.

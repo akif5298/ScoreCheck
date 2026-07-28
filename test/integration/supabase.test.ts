@@ -296,17 +296,30 @@ describe('getGamesBySquadId / getGameById', () => {
     expect(games).toHaveLength(1);
   });
 
-  it('KNOWN BUG: a game with no players/teams reports [null], not []', async () => {
+  it('reports [] for a game with no players/teams, not [null]', async () => {
     const user = await makeUser();
     const squad = await makeSquad(user.id);
     const game = await seedGame(squad.id, user.id);
 
     const found = await svc.getGameById(game.id, squad.id);
 
-    // json_agg over a LEFT JOIN with no matches yields [null] rather than an empty array.
-    // Callers must filter it; pinned here so the refactor cannot change it unnoticed.
-    expect(found.players).toEqual([null]);
-    expect(found.teams).toEqual([null]);
+    // A bare json_agg over a LEFT JOIN with no matches yields [null], and every consumer
+    // then has to remember to filter it. analytics.ts did not: calculateTeamStats read
+    // `p.team` off that null and returned a 500 for the whole dashboard. Fixed at the
+    // source with FILTER (WHERE ... IS NOT NULL) so absence is an empty array everywhere.
+    expect(found.players).toEqual([]);
+    expect(found.teams).toEqual([]);
+  });
+
+  it('reports [] from the list query too, not just the single-game query', async () => {
+    const user = await makeUser();
+    const squad = await makeSquad(user.id);
+    await seedGame(squad.id, user.id);
+
+    const games = await svc.getGamesBySquadId(squad.id);
+
+    expect(games[0]!.players).toEqual([]);
+    expect(games[0]!.teams).toEqual([]);
   });
 
   it('KNOWN BUG: json_agg(DISTINCT ...) over two LEFT JOINs multiplies rows', async () => {

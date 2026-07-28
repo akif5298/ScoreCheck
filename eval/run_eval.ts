@@ -19,8 +19,9 @@ import path from 'path'
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 import * as fs from 'fs';
-import { getMappingsForUser, applyMapping } from '../src/services/mappingService';
-import { pgClient } from '../src/services/supabase';
+import { getMappingsForSquad, applyMapping } from '../src/services/mappingService';
+import { resolveSquadId } from '../src/services/squadService';
+import { pgPool } from '../src/services/supabase';
 
 // -- Default model list for --pipeline=bench ----------------------------------
 
@@ -391,12 +392,18 @@ async function main(): Promise<void> {
 
   let evalMappings: Map<string, string> = new Map();
   try {
-    const userRes = await pgClient.query<{ id: string }>(
+    const userRes = await pgPool.query<{ id: string }>(
       'SELECT id FROM users WHERE email = $1 LIMIT 1',
       ['dev.user@scorecheck.com'],
     );
     if (userRes.rows.length > 0) {
-      evalMappings = await getMappingsForUser(userRes.rows[0].id);
+      // Mappings became squad-scoped in the squad ownership model, so the demo user's id
+      // is no longer a valid key. resolveSquadId is reused rather than querying for the
+      // squad here: it already encodes activeSquadId-then-personal-squad with a membership
+      // check, and re-deriving that in a script is exactly how this call drifted out of
+      // date in the first place.
+      const squadId = await resolveSquadId(userRes.rows[0].id);
+      evalMappings = await getMappingsForSquad(squadId);
       console.log(`Player mappings loaded: ${evalMappings.size}`);
     } else {
       console.log('Demo user not found in DB -- running without name mappings');

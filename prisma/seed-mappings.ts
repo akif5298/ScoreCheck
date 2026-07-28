@@ -37,21 +37,53 @@ async function main(): Promise<void> {
 
   if (userResult.rows.length === 0) {
     console.log(`No demo user found with email: ${DEMO_USER_EMAIL}`);
-    console.log('Log in once via the frontend in dev mode (POST /api/auth/apple with mock token) to create the user, then re-run this script.');
+    console.log(`Sign up once with that email (POST /api/auth/signup, or the login page in dev) to create the user, then re-run this script.`);
     await client.end();
     return;
   }
 
   const userId = userResult.rows[0]!.id;
-  console.log(`Seeding mappings for userId=${userId} (${DEMO_USER_EMAIL})`);
+
+  // Mappings are owned by a squad, not a user. Resolve the same way the request path does
+  // (see resolveSquadId in src/services/squadService.ts): the user's active squad when it
+  // is one they actually belong to, otherwise their personal squad, which every account
+  // gets at signup. Inlined as SQL rather than imported, to keep this script standalone —
+  // importing the service would pull in supabase.ts, which builds a pg Pool and a Supabase
+  // storage client at module scope and would fail here for reasons unrelated to seeding.
+  const squadResult = await client.query<{ squadId: string | null }>(
+    `SELECT COALESCE(
+              (SELECT s.id FROM squads s
+                 JOIN squad_members sm ON sm."squadId" = s.id AND sm."userId" = u.id
+                WHERE s.id = u."activeSquadId"),
+              (SELECT s.id FROM squads s
+                 JOIN squad_members sm ON sm."squadId" = s.id AND sm."userId" = u.id
+                WHERE s."isPersonal" = true
+                ORDER BY s."createdAt" ASC
+                LIMIT 1)
+            ) AS "squadId"
+       FROM users u
+      WHERE u.id = $1`,
+    [userId],
+  );
+
+  const squadId = squadResult.rows[0]?.squadId ?? null;
+  if (!squadId) {
+    console.log(`Demo user ${DEMO_USER_EMAIL} belongs to no squad — cannot seed mappings.`);
+    console.log('Signup creates a personal squad automatically; this user predates that or was created by hand.');
+    await client.end();
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`Seeding mappings for squadId=${squadId} (user ${DEMO_USER_EMAIL})`);
 
   for (const { gamertag, displayName } of SEED_MAPPINGS) {
     await client.query(
-      `INSERT INTO player_mappings (id, "userId", gamertag, "displayName", "createdAt", "updatedAt")
+      `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
        VALUES (gen_random_uuid()::text, $1, $2, $3, NOW(), NOW())
-       ON CONFLICT ("userId", gamertag) DO UPDATE
+       ON CONFLICT ("squadId", gamertag) DO UPDATE
          SET "displayName" = EXCLUDED."displayName", "updatedAt" = NOW()`,
-      [userId, gamertag, displayName],
+      [squadId, gamertag, displayName],
     );
     console.log(`  ${gamertag.padEnd(20)} → ${displayName}`);
   }

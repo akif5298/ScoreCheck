@@ -94,9 +94,31 @@ describe('renameInLineupName', () => {
     expect(renameInLineupName(lineup, new Map([['Nillan', 'Nil']]))).toBe(lineup);
   });
 
-  it('returns null for an unparseable lineup rather than guessing', () => {
+  it('returns null for a partially-parseable lineup rather than guessing', () => {
     // Callers must leave the value alone: a half-rewritten lineup name breaks the
-    // p.team = g."homeTeam" join silently.
+    // p.team = g."homeTeam" join silently. The " + " marks this as a composite name whose
+    // second token is malformed — quite different from a plain name (below).
     expect(renameInLineupName('Akif + AI (SG)', new Map([['Akif', 'A']]))).toBeNull();
+  });
+
+  it.each([
+    ['a plain opponent name', 'Team B'],
+    ['a plain name with spaces', 'The Visitors'],
+    ['a plain name containing parens', 'Team B (away)x'],
+  ])('passes %s through unchanged instead of failing', (_label, lineup) => {
+    // These carry no player tokens at all, so there is nothing in them to rewrite and a
+    // rename is a no-op. Reporting them as unrewritable used to abort the rename for the
+    // WHOLE game — and since the opponent side is named "Team A"/"Team B" by convention,
+    // that silently suppressed renaming on most real moves.
+    expect(renameInLineupName(lineup, new Map([['Nillan', 'Nil']]))).toBe(lineup);
+  });
+
+  it('still refuses a name that carries the separator but will not parse', () => {
+    // The distinction that keeps the loosening safe: structure present, parse failed.
+    expect(renameInLineupName('Nillan (PG) + Akif', new Map([['Nillan', 'Nil']]))).toBeNull();
+  });
+
+  it('returns null for an empty string', () => {
+    expect(renameInLineupName('', new Map())).toBeNull();
   });
 });

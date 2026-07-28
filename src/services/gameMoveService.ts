@@ -318,7 +318,14 @@ export async function moveGamesToSquad(
 
     return result;
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackErr) {
+      // Logged rather than swallowed, matching squadService and mappingService: a rollback
+      // that fails usually means the connection is gone, and that is worth a line in the
+      // log even though the original error is what the caller must see.
+      logger.error({ err: rollbackErr }, 'Rollback failed after game move error');
+    }
     throw error;
   } finally {
     client.release();

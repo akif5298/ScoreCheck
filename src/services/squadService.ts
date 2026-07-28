@@ -8,7 +8,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { pgClient, pgPool, type Queryable } from './supabase';
+import { pgPool, type Queryable } from './supabase';
 import logger from '@/utils/logger';
 
 export type SquadRole = 'OWNER' | 'MEMBER';
@@ -43,7 +43,7 @@ export class SquadError extends Error {
  */
 export async function createPersonalSquad(
   userId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<Squad> {
   const result = await db.query<Squad>(
     `INSERT INTO squads (id, name, "isPersonal", "createdByUserId", "createdAt", "updatedAt")
@@ -81,7 +81,7 @@ export async function createPersonalSquad(
 export async function seedRosterFromPersonal(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<number> {
   const { rows: existing } = await db.query<{ n: string }>(
     'SELECT COUNT(*) n FROM player_mappings WHERE "squadId" = $1',
@@ -137,7 +137,7 @@ export async function createSquad(userId: string, name: string): Promise<Squad> 
 export async function getMembership(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<SquadMembership | null> {
   const result = await db.query<SquadMembership>(
     `SELECT "squadId", "userId", role FROM squad_members WHERE "userId" = $1 AND "squadId" = $2`,
@@ -150,7 +150,7 @@ export async function getMembership(
 export async function assertMember(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<SquadMembership> {
   const membership = await getMembership(userId, squadId, db);
   if (!membership) {
@@ -162,7 +162,7 @@ export async function assertMember(
 export async function assertOwner(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<SquadMembership> {
   const membership = await assertMember(userId, squadId, db);
   if (membership.role !== 'OWNER') {
@@ -173,7 +173,7 @@ export async function assertOwner(
 
 export async function listSquadsForUser(
   userId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<Array<Squad & { role: SquadRole; memberCount: number; gameCount: number; isActive: boolean }>> {
   const result = await db.query<
     Squad & { role: SquadRole; memberCount: number; gameCount: number; isActive: boolean }
@@ -202,7 +202,7 @@ export async function listSquadsForUser(
 export async function resolveSquadId(
   userId: string,
   requested?: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<string> {
   if (requested) {
     await assertMember(userId, requested, db);
@@ -241,7 +241,7 @@ export async function resolveSquadId(
 
 export async function setActiveSquad(userId: string, squadId: string): Promise<void> {
   await assertMember(userId, squadId);
-  await pgClient.query(`UPDATE users SET "activeSquadId" = $1, "updatedAt" = NOW() WHERE id = $2`, [
+  await pgPool.query(`UPDATE users SET "activeSquadId" = $1, "updatedAt" = NOW() WHERE id = $2`, [
     squadId,
     userId,
   ]);
@@ -266,7 +266,7 @@ export interface SquadMemberDetail {
 export async function listMembers(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<SquadMemberDetail[]> {
   await assertMember(userId, squadId, db);
   const result = await db.query<SquadMemberDetail>(
@@ -326,7 +326,7 @@ export async function createInvite(
   const squad = await assertOwner(userId, squadId);
   void squad;
 
-  const personal = await pgClient.query<{ isPersonal: boolean }>(
+  const personal = await pgPool.query<{ isPersonal: boolean }>(
     `SELECT "isPersonal" FROM squads WHERE id = $1`,
     [squadId],
   );
@@ -349,7 +349,7 @@ export async function createInvite(
   // endpoint stay unauthenticated.
   const token = randomBytes(24).toString('base64url');
 
-  const result = await pgClient.query<SquadInvite>(
+  const result = await pgPool.query<SquadInvite>(
     `INSERT INTO squad_invites
        (id, "squadId", token, "createdByUserId", role, "expiresAt", "maxUses", "usedCount", "createdAt")
      VALUES (gen_random_uuid()::text, $1, $2, $3, 'MEMBER', NOW() + ($4 || ' days')::interval, $5, 0, NOW())
@@ -366,7 +366,7 @@ export async function revokeInvite(
   inviteId: string,
 ): Promise<void> {
   await assertOwner(userId, squadId);
-  const result = await pgClient.query(
+  const result = await pgPool.query(
     `UPDATE squad_invites SET "revokedAt" = NOW()
      WHERE id = $1 AND "squadId" = $2 AND "revokedAt" IS NULL`,
     [inviteId, squadId],
@@ -379,7 +379,7 @@ export async function revokeInvite(
 /** OWNER only — an invite token is a credential, so members at large must not read them. */
 export async function listInvites(userId: string, squadId: string): Promise<SquadInvite[]> {
   await assertOwner(userId, squadId);
-  const result = await pgClient.query<SquadInvite>(
+  const result = await pgPool.query<SquadInvite>(
     `SELECT id, "squadId", token, role, "expiresAt", "maxUses", "usedCount", "revokedAt", "createdAt"
      FROM squad_invites WHERE "squadId" = $1 ORDER BY "createdAt" DESC`,
     [squadId],
@@ -393,7 +393,7 @@ export async function listInvites(userId: string, squadId: string): Promise<Squa
  * from "expired token", and cannot probe which tokens exist.
  */
 export async function getInvitePreview(token: string): Promise<InvitePreview | null> {
-  const result = await pgClient.query<InvitePreview>(
+  const result = await pgPool.query<InvitePreview>(
     `SELECT s.id AS "squadId", s.name AS "squadName", u.name AS "invitedByName",
             (SELECT COUNT(*)::int FROM squad_members m WHERE m."squadId" = s.id) AS "memberCount",
             (SELECT COUNT(*)::int FROM games g WHERE g."squadId" = s.id) AS "gameCount"
@@ -504,7 +504,7 @@ export interface RosterEntry {
 export async function listRoster(
   userId: string,
   squadId: string,
-  db: Queryable = pgClient,
+  db: Queryable = pgPool,
 ): Promise<RosterEntry[]> {
   await assertMember(userId, squadId, db);
   const result = await db.query<RosterEntry>(

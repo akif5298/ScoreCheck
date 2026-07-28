@@ -62,10 +62,6 @@ export const pgPool = new Pool({
 // instead of crashing the process.
 pgPool.on('error', (err) => logger.error({ err }, 'Unexpected PostgreSQL pool error'));
 
-// Backwards-compatible alias: pool.query has the same signature as client.query,
-// so every non-transactional call site keeps working unchanged.
-export const pgClient = pgPool;
-
 // Rebuilds player_totals for one squad directly from its per-game `players` rows.
 // Adapted from RECOMPUTE_TOTALS_SQL in scripts/import-labeled-data.ts, re-scoped from
 // userId to squadId. That SQL was verified against production: rebuilding with it
@@ -198,7 +194,7 @@ export class SupabaseService {
   // atomically — a user without a personal squad has no resolvable scope.
   async createLocalUser(
     userData: { email: string; name: string | null; passwordHash: string },
-    db: Queryable = pgClient,
+    db: Queryable = pgPool,
   ) {
     const query = `
       INSERT INTO users (id, email, name, role, "passwordHash", "createdAt", "updatedAt")
@@ -210,17 +206,17 @@ export class SupabaseService {
   }
 
   async findUserByEmail(email: string) {
-    const result = await pgClient.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const result = await pgPool.query('SELECT * FROM users WHERE LOWER(email) = LOWER($1)', [email]);
     return result.rows[0] || null;
   }
 
   async findUserById(userId: string) {
-    const result = await pgClient.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const result = await pgPool.query('SELECT * FROM users WHERE id = $1', [userId]);
     return result.rows[0] || null;
   }
 
   async updatePasswordHash(userId: string, passwordHash: string): Promise<void> {
-    await pgClient.query(
+    await pgPool.query(
       'UPDATE users SET "passwordHash" = $2, "updatedAt" = NOW() WHERE id = $1',
       [userId, passwordHash],
     );
@@ -229,14 +225,14 @@ export class SupabaseService {
   // Squad-scoped: every member's uploads share one hash pool, so the same screenshot
   // uploaded by a second member is recognised as a duplicate.
   async getGameHashesBySquadId(squadId: string): Promise<string[]> {
-    const result = await pgClient.query(
+    const result = await pgPool.query(
       `SELECT "imageHash" FROM games WHERE "squadId" = $1 AND "imageHash" IS NOT NULL`,
       [squadId],
     );
     return result.rows.map((row: any) => row.imageHash as string);
   }
 
-  async createGame(gameData: any, db: Queryable = pgClient) {
+  async createGame(gameData: any, db: Queryable = pgPool) {
     try {
       const query = `
         INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore", "screenshotUrl", "imageHash", processed, "createdAt", "updatedAt", "squadId", "uploadedByUserId")
@@ -265,7 +261,7 @@ export class SupabaseService {
     }
   }
 
-  async createPlayer(playerData: any, db: Queryable = pgClient) {
+  async createPlayer(playerData: any, db: Queryable = pgPool) {
     try {
       const query = `
         INSERT INTO players (
@@ -313,7 +309,7 @@ export class SupabaseService {
     }
   }
 
-  async createTeam(teamData: any, db: Queryable = pgClient) {
+  async createTeam(teamData: any, db: Queryable = pgPool) {
     try {
       const query = `
         INSERT INTO teams (
@@ -401,7 +397,7 @@ export class SupabaseService {
   }
 
   // Atomically creates a game, its players, and both team records in a single
-  // pgClient transaction. Rolls back all writes if any step fails.
+  // pgPool transaction. Rolls back all writes if any step fails.
   //
   // Throws DuplicateGameError if the squad already holds a perceptually identical
   // screenshot — see the check below.
@@ -469,7 +465,7 @@ export class SupabaseService {
         statsData.squadId
       ];
       
-      const result = await pgClient.query(query, values);
+      const result = await pgPool.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating player stats');
@@ -484,7 +480,7 @@ export class SupabaseService {
         WHERE "playerName" = $1 AND "squadId" = $2
       `;
 
-      const result = await pgClient.query(query, [playerName, squadId]);
+      const result = await pgPool.query(query, [playerName, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats by name');
@@ -555,7 +551,7 @@ export class SupabaseService {
         squadId
       ];
 
-      const result = await pgClient.query(query, values);
+      const result = await pgPool.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error updating player stats');
@@ -571,7 +567,7 @@ export class SupabaseService {
         ORDER BY "totalPoints" DESC
       `;
 
-      const result = await pgClient.query(query, [squadId]);
+      const result = await pgPool.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player stats');
@@ -581,10 +577,14 @@ export class SupabaseService {
 
   async getGamesBySquadId(squadId: string) {
     try {
+      // FILTER + COALESCE, not a bare json_agg: over a LEFT JOIN with no matching rows an
+      // unfiltered json_agg produces [null], which every consumer then has to remember to
+      // strip. analytics.ts did not, and read `p.team` off that null — a 500 for the whole
+      // dashboard whenever a game had no players. Absence is reported as [] instead.
       const query = `
         SELECT g.*,
-               json_agg(DISTINCT p.*) as players,
-               json_agg(DISTINCT t.*) as teams
+               COALESCE(json_agg(DISTINCT p.*) FILTER (WHERE p.id IS NOT NULL), '[]') as players,
+               COALESCE(json_agg(DISTINCT t.*) FILTER (WHERE t.id IS NOT NULL), '[]') as teams
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
@@ -592,7 +592,7 @@ export class SupabaseService {
         GROUP BY g.id
       `;
 
-      const result = await pgClient.query(query, [squadId]);
+      const result = await pgPool.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting games by user ID');
@@ -611,7 +611,7 @@ export class SupabaseService {
           AND TRIM(name) != ''
       `;
 
-      const result = await pgClient.query(query, [squadId]);
+      const result = await pgPool.query(query, [squadId]);
       const count = parseInt(result.rows[0]?.distinct_players || '0', 10);
       return count;
     } catch (error) {
@@ -629,7 +629,7 @@ export class SupabaseService {
         LIMIT 1
       `;
 
-      const result = await pgClient.query(query, [screenshotUrl, squadId]);
+      const result = await pgPool.query(query, [screenshotUrl, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       // Must NOT return null here: the caller reads null as "no existing game" and saves a
@@ -647,7 +647,7 @@ export class SupabaseService {
         WHERE player_name = $1 AND squadid = $2
       `;
 
-      const result = await pgClient.query(query, [playerName, squadId]);
+      const result = await pgPool.query(query, [playerName, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       // Must NOT return null here: the caller reads null as "no totals yet" and INSERTs a
@@ -665,7 +665,7 @@ export class SupabaseService {
         ORDER BY player_name
       `;
 
-      const result = await pgClient.query(query, [squadId]);
+      const result = await pgPool.query(query, [squadId]);
       return result.rows;
     } catch (error) {
       logger.error({ err: error }, 'Error getting player totals by user ID');
@@ -722,7 +722,7 @@ export class SupabaseService {
         squadId
       ];
       
-      const result = await pgClient.query(query, values);
+      const result = await pgPool.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error updating player totals');
@@ -767,7 +767,7 @@ export class SupabaseService {
         totalsData.squadid
       ];
       
-      const result = await pgClient.query(query, values);
+      const result = await pgPool.query(query, values);
       return result.rows[0];
     } catch (error) {
       logger.error({ err: error }, 'Error creating player totals');
@@ -775,7 +775,7 @@ export class SupabaseService {
     }
   }
 
-  async updatePlayerStatsFromTotals(squadId: string, allowedNames: string[], db: Queryable = pgClient) {
+  async updatePlayerStatsFromTotals(squadId: string, allowedNames: string[], db: Queryable = pgPool) {
     if (allowedNames.length === 0) return { rowCount: 0 };
     try {
       const query = `
@@ -927,7 +927,7 @@ export class SupabaseService {
    * Scoped to ONE squad. NOTE: scripts/import-labeled-data.ts deletes these tables with no
    * WHERE clause; that is only safe for a single-user import and must never be copied here.
    */
-  async recomputeSquadAggregates(squadId: string, db: Queryable = pgClient) {
+  async recomputeSquadAggregates(squadId: string, db: Queryable = pgPool) {
     await db.query('DELETE FROM player_stats WHERE "squadId" = $1', [squadId]);
     await db.query('DELETE FROM player_totals WHERE squadid = $1', [squadId]);
     await db.query(RECOMPUTE_TOTALS_SQL, [squadId]);
@@ -1105,10 +1105,13 @@ export class SupabaseService {
 
   async getGameById(gameId: string, squadId: string) {
     try {
+      // Same FILTER + COALESCE as getGamesBySquadId — see the note there. The two must
+      // agree: callers switch between them freely and would otherwise get [] from one and
+      // [null] from the other for the same game.
       const query = `
         SELECT g.*,
-               json_agg(DISTINCT p.*) as players,
-               json_agg(DISTINCT t.*) as teams
+               COALESCE(json_agg(DISTINCT p.*) FILTER (WHERE p.id IS NOT NULL), '[]') as players,
+               COALESCE(json_agg(DISTINCT t.*) FILTER (WHERE t.id IS NOT NULL), '[]') as teams
         FROM games g
         LEFT JOIN players p ON g.id = p."gameId"
         LEFT JOIN teams t ON g.id = t."gameId"
@@ -1116,7 +1119,7 @@ export class SupabaseService {
         GROUP BY g.id
       `;
 
-      const result = await pgClient.query(query, [gameId, squadId]);
+      const result = await pgPool.query(query, [gameId, squadId]);
       return result.rows[0] || null;
     } catch (error) {
       logger.error({ err: error }, 'Error getting game by ID');

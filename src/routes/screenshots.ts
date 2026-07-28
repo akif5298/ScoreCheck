@@ -678,7 +678,8 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
     // with a null imageHash, i.e. permanently invisible to duplicate detection.
     const savedImageHash = pendingHashes.get(imageUrl) ?? null;
 
-    // Atomic save: game + players + teams in a single pgClient transaction, which also
+    // Atomic save: game + players + teams in a single transaction on a dedicated
+    // pooled client, which also
     // re-checks for a perceptual duplicate under an advisory lock (see
     // SupabaseService.assertNotDuplicateInSquad).
     let saveResult: { game: any; players: Player[] };

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import supabaseService, { pgClient } from '@/services/supabase';
+import supabaseService, { pgPool } from '@/services/supabase';
 import { authenticateToken } from '@/middleware/auth';
 import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { ApiResponse, AnalyticsData, PlayerStats } from '@/types';
@@ -12,14 +12,6 @@ const router = Router();
 // Get player statistics
 router.get('/players', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const allPlayers = games.flatMap(game => game.players || []);
 
@@ -54,14 +46,6 @@ router.get('/players', authenticateToken, resolveSquad, async (req: Request, res
 // Get team statistics
 router.get('/teams', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const teams = games.map(game => ({
       name: game.homeTeam,
@@ -100,14 +84,6 @@ router.get('/teams', authenticateToken, resolveSquad, async (req: Request, res: 
 // Get comprehensive analytics dashboard
 router.get('/dashboard', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     // Get recent games
     const allGames = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const recentGames = allGames.slice(0, 10);
@@ -182,11 +158,7 @@ router.get('/dashboard', authenticateToken, resolveSquad, async (req: Request, r
 // Get lineup efficiency — groups of players by team, sorted by avg point differential
 router.get('/lineups', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = { success: false, error: 'User not authenticated' };
-      return res.status(401).json(response);
-    }
-    const lineups = await getLineupEfficiency(requireSquadId(req), pgClient);
+    const lineups = await getLineupEfficiency(requireSquadId(req), pgPool);
     const response: ApiResponse<{ lineups: typeof lineups }> = {
       success: true,
       data: { lineups },
@@ -244,11 +216,6 @@ async function calculatePlayerStats(
     const playerMap = new Map<string, PlayerStats>();
 
     for (const player of players) {
-      // Skip players with null/undefined names or teams
-      if (!player.name || !player.team) {
-        continue;
-      }
-
       // Only include the user's mapped display names
       if (!allowedNames.has(player.name)) {
         continue;

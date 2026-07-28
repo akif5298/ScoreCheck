@@ -5,7 +5,7 @@ jest.mock('@/services/supabase', () => ({
     getDistinctPlayerCount: jest.fn(),
     getPlayerStats: jest.fn(),
   },
-  pgClient: {},
+  pgPool: {},
 }));
 
 jest.mock('@/services/lineupEfficiency', () => ({
@@ -133,15 +133,6 @@ describe('GET /players', () => {
     expect(res.body.data.stats).toHaveLength(1);
   });
 
-  it('returns 401 when req.user is not set', async () => {
-    mockedAuth.mockImplementationOnce(async (_req: any, _res: any, next: any) => next());
-
-    const res = await request(app).get('/players');
-
-    expect(res.status).toBe(401);
-    expect(res.body.success).toBe(false);
-  });
-
   it('returns 500 when fetching games throws', async () => {
     mockedSupabase.getGamesBySquadId.mockRejectedValue(new Error('DB down'));
 
@@ -201,14 +192,6 @@ describe('GET /lineups', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.lineups).toHaveLength(1);
-  });
-
-  it('returns 401 when req.user is not set', async () => {
-    mockedAuth.mockImplementationOnce(async (_req: any, _res: any, next: any) => next());
-
-    const res = await request(app).get('/lineups');
-
-    expect(res.status).toBe(401);
   });
 
   it('returns 500 when getLineupEfficiency throws', async () => {

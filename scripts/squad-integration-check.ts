@@ -15,7 +15,7 @@
  * It TRUNCATEs application tables between scenarios — never point it at production.
  */
 import { randomUUID } from 'node:crypto';
-import { pgClient, pgPool } from '@/services/supabase';
+import { pgPool } from '@/services/supabase';
 import supabaseService from '@/services/supabase';
 import {
   SquadError,
@@ -54,7 +54,7 @@ async function statusOf(fn: () => Promise<unknown>): Promise<number | string> {
 
 async function makeUser(name: string): Promise<string> {
   const id = randomUUID();
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO users (id, email, name, role, "createdAt", "updatedAt")
      VALUES ($1, $2, $3, 'USER', NOW(), NOW())`,
     [id, `${name}-${id.slice(0, 8)}@example.com`, name],
@@ -64,13 +64,13 @@ async function makeUser(name: string): Promise<string> {
 
 async function makeGame(squadId: string, uploaderId: string): Promise<string> {
   const id = `game_${randomUUID()}`;
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore",
        "screenshotUrl", processed, "createdAt", "updatedAt", "squadId", "uploadedByUserId")
      VALUES ($1, NOW(), 'A', 'B', 95, 87, 'obj/x.jpg', true, NOW(), NOW(), $2, $3)`,
     [id, squadId, uploaderId],
   );
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO players (id, name, team, "gameIdFromFile", "playerId", position,
        points, rebounds, assists, steals, blocks, fouls, turnovers,
        "fgMade", "fgAttempted", "threeMade", "threeAttempted", "ftMade", "ftAttempted",
@@ -78,7 +78,7 @@ async function makeGame(squadId: string, uploaderId: string): Promise<string> {
      VALUES ($1,'Akif','A','1','1_1_A','PG',20,5,3,1,0,3,2,8,15,2,5,2,2,NOW(),NOW(),$2,$3)`,
     [`player_${randomUUID()}`, id, squadId],
   );
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO teams (id, name, "isHome", points, rebounds, assists, steals, blocks,
        turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
        "ftMade", "ftAttempted", "createdAt", "updatedAt", "gameId", "squadId")
@@ -102,7 +102,7 @@ async function makeRichGame(
   const homeTeam = `${opts.player} (PG) + AI (SG)`;
   const awayTeam = 'Random (PG) + Random (SG)';
 
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO games (id, date, "homeTeam", "awayTeam", "homeScore", "awayScore",
        "screenshotUrl", processed, "createdAt", "updatedAt", "squadId", "uploadedByUserId", "imageHash")
      VALUES ($1, NOW(), $4, $5, 95, 87, 'obj/x.jpg', true, NOW(), NOW(), $2, $3, $6)`,
@@ -113,7 +113,7 @@ async function makeRichGame(
     [opts.player, '1_1_A'],
     ['AI Player', '1_2_A'],
   ] as [string, string][]) {
-    await pgClient.query(
+    await pgPool.query(
       `INSERT INTO players (id, name, team, "gameIdFromFile", "playerId", position,
          points, rebounds, assists, steals, blocks, fouls, turnovers,
          "fgMade", "fgAttempted", "threeMade", "threeAttempted", "ftMade", "ftAttempted",
@@ -127,7 +127,7 @@ async function makeRichGame(
     [homeTeam, true],
     [awayTeam, false],
   ] as [string, boolean][]) {
-    await pgClient.query(
+    await pgPool.query(
       `INSERT INTO teams (id, name, "isHome", points, rebounds, assists, steals, blocks,
          turnovers, fouls, "fgMade", "fgAttempted", "threeMade", "threeAttempted",
          "ftMade", "ftAttempted", "createdAt", "updatedAt", "gameId", "squadId")
@@ -146,7 +146,7 @@ async function makeUserWithPersonal(name: string): Promise<{ id: string; persona
 }
 
 async function addMapping(squadId: string, gamertag: string, displayName: string): Promise<void> {
-  await pgClient.query(
+  await pgPool.query(
     `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
      VALUES (gen_random_uuid()::text, $1, $2, $3, NOW(), NOW())`,
     [squadId, gamertag, displayName],
@@ -154,7 +154,7 @@ async function addMapping(squadId: string, gamertag: string, displayName: string
 }
 
 const scalar = async (sql: string, params: unknown[] = []): Promise<any> =>
-  (await pgClient.query(sql, params as any[])).rows[0]?.v;
+  (await pgPool.query(sql, params as any[])).rows[0]?.v;
 
 /** The invariant the lineup join depends on. Must be 0 for every squad, always. */
 const orphanedLineups = (squadId: string) =>
@@ -165,7 +165,7 @@ const orphanedLineups = (squadId: string) =>
   );
 
 const reset = () =>
-  pgClient.query(
+  pgPool.query(
     'TRUNCATE games, players, teams, player_mappings, player_stats, player_totals, squad_invites, squad_members, squads, users CASCADE',
   );
 
@@ -233,12 +233,12 @@ const reset = () =>
 
     const again = await acceptInvite(joiner, good.token);
     check('re-accepting is idempotent (joined:false)', again.joined, false);
-    const used = await pgClient.query('SELECT "usedCount" FROM squad_invites WHERE id = $1', [good.id]);
+    const used = await pgPool.query('SELECT "usedCount" FROM squad_invites WHERE id = $1', [good.id]);
     check('  …and does NOT consume a second use', used.rows[0].usedCount, 1);
 
     // Expiry is enforced in SQL, so push the row into the past rather than waiting.
     const expired = await createInvite(owner, squad.id);
-    await pgClient.query(`UPDATE squad_invites SET "expiresAt" = NOW() - interval '1 hour' WHERE id = $1`, [
+    await pgPool.query(`UPDATE squad_invites SET "expiresAt" = NOW() - interval '1 hour' WHERE id = $1`, [
       expired.id,
     ]);
     const other = await makeUser('other');
@@ -274,7 +274,7 @@ const reset = () =>
     check('maxUses:1 — exactly one joined', outcomes.filter(o => o === 'joined').length, 1);
     check('maxUses:1 — the other four refused', outcomes.filter(o => o === 'refused').length, 4);
     check('maxUses:1 — squad has 2 members (owner + 1)', (await listMembers(owner, squad.id)).length, 2);
-    const finalUse = await pgClient.query('SELECT "usedCount" FROM squad_invites WHERE id = $1', [invite.id]);
+    const finalUse = await pgPool.query('SELECT "usedCount" FROM squad_invites WHERE id = $1', [invite.id]);
     check('maxUses:1 — usedCount is exactly 1', finalUse.rows[0].usedCount, 1);
   }
 
@@ -289,7 +289,7 @@ const reset = () =>
     const invite = await createInvite(owner, squad.id);
     await acceptInvite(member, invite.token);
 
-    const seeded = await pgClient.query<{ id: string }>(
+    const seeded = await pgPool.query<{ id: string }>(
       `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
        VALUES (gen_random_uuid()::text, $1, 'akif2k', 'Akif', NOW(), NOW()) RETURNING id`,
       [squad.id],
@@ -310,14 +310,14 @@ const reset = () =>
 
     // Re-claiming moves the link rather than failing — the [squadId, linkedUserId] unique
     // index would otherwise make correcting a mistake impossible without an admin.
-    const seeded2 = await pgClient.query<{ id: string }>(
+    const seeded2 = await pgPool.query<{ id: string }>(
       `INSERT INTO player_mappings (id, "squadId", gamertag, "displayName", "createdAt", "updatedAt")
        VALUES (gen_random_uuid()::text, $1, 'nil_alt', 'Nillan Alt', NOW(), NOW()) RETURNING id`,
       [squad.id],
     );
     const moved = await claimRosterEntry(member, squad.id, { mappingId: seeded2.rows[0]!.id });
     check('re-claiming moves the link', moved.gamertag, 'nil_alt');
-    const stillLinked = await pgClient.query(
+    const stillLinked = await pgPool.query(
       `SELECT count(*)::int AS n FROM player_mappings WHERE "squadId" = $1 AND "linkedUserId" = $2`,
       [squad.id, member],
     );
@@ -355,7 +355,7 @@ const reset = () =>
     );
     check(
       '  …and the game is still there',
-      (await pgClient.query('SELECT count(*)::int AS n FROM games WHERE id = $1', [g1])).rows[0].n,
+      (await pgPool.query('SELECT count(*)::int AS n FROM games WHERE id = $1', [g1])).rows[0].n,
       1,
     );
     check(
@@ -365,12 +365,12 @@ const reset = () =>
     );
     check(
       '  …and players cascade with it',
-      (await pgClient.query('SELECT count(*)::int AS n FROM players WHERE "gameId" = $1', [g1])).rows[0].n,
+      (await pgPool.query('SELECT count(*)::int AS n FROM players WHERE "gameId" = $1', [g1])).rows[0].n,
       0,
     );
     check(
       '  …and teams cascade with it',
-      (await pgClient.query('SELECT count(*)::int AS n FROM teams WHERE "gameId" = $1', [g1])).rows[0].n,
+      (await pgPool.query('SELECT count(*)::int AS n FROM teams WHERE "gameId" = $1', [g1])).rows[0].n,
       0,
     );
 
@@ -392,7 +392,7 @@ const reset = () =>
     );
     check(
       '  …and it survives',
-      (await pgClient.query('SELECT count(*)::int AS n FROM games WHERE id = $1', [g3])).rows[0].n,
+      (await pgPool.query('SELECT count(*)::int AS n FROM games WHERE id = $1', [g3])).rows[0].n,
       1,
     );
     check(
@@ -461,7 +461,7 @@ const reset = () =>
     // A squad that already has its own roster is NOT seeded, so the two squads disagree
     // about what to call the same gamertag — the case Phase 6 exists to reconcile.
     const squad = await createSquad(owner, 'Other Group');
-    await pgClient.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
+    await pgPool.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
     await addMapping(squad.id, 'GRIM_BuLLeTzZz', 'Nil');
 
     const moving = await makeRichGame(personal, owner, { player: 'Nillan' });
@@ -522,7 +522,7 @@ const reset = () =>
     const { id: member, personalId: memberPersonal } = await makeUserWithPersonal('member');
     const { id: outsider, personalId: outsiderPersonal } = await makeUserWithPersonal('outsider');
     const squad = await createSquad(owner, 'Squad');
-    await pgClient.query(
+    await pgPool.query(
       `INSERT INTO squad_members (id, "squadId", "userId", role, "joinedAt")
        VALUES (gen_random_uuid()::text, $1, $2, 'MEMBER', NOW())`,
       [squad.id, member],
@@ -589,13 +589,13 @@ const reset = () =>
     await addMapping(personal, 'tag_b', 'Dylan');
 
     const squad = await createSquad(owner, 'Merged');
-    await pgClient.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
+    await pgPool.query('DELETE FROM player_mappings WHERE "squadId" = $1', [squad.id]);
     // The target calls BOTH tags the same thing — applying this would sum two players.
     await addMapping(squad.id, 'tag_a', 'Nil');
     await addMapping(squad.id, 'tag_b', 'Nil');
 
     const g = await makeRichGame(personal, owner, { player: 'Nillan' });
-    await pgClient.query(
+    await pgPool.query(
       `UPDATE players SET name = 'Dylan' WHERE "gameId" = $1 AND name = 'AI Player'`,
       [g],
     );

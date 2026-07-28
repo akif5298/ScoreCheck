@@ -13,6 +13,27 @@ jobs:
   server:
     name: Server (lint, typecheck, test, build)
     runs-on: ubuntu-latest
+
+    # `npm test` runs two Jest projects: `unit`, which needs nothing, and `integration`,
+    # which runs against a real Postgres. The harness provisions its own schema from the
+    # committed migrations and clones a database per worker, so a bare server on the port
+    # test/integration/db-name.ts expects is the whole requirement — no seed, no dump,
+    # no production access.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: int
+        ports:
+          - 55434:5432
+        # Without a healthcheck the job races the container and globalSetup fails on a
+        # connection refused that looks exactly like a misconfiguration.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 

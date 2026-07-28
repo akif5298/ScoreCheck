@@ -65,3 +65,23 @@ export class AuthenticationError extends Error {
     this.name = 'AuthenticationError';
   }
 }
+
+/**
+ * A resource the caller asked for is not present in their scope.
+ *
+ * Carries `status` so a route can translate it without reaching into an untyped error.
+ * Replaces the ad-hoc `Object.assign(new Error(...), { status: 404 })` pattern, which
+ * produced an error nothing could narrow on and no compiler could check.
+ *
+ * Note this deliberately covers both "does not exist" and "exists but is not yours": the
+ * two are reported identically so a response cannot be used to probe for ids owned by
+ * another squad. SquadError in squadService plays the same role for squad-scoped failures
+ * and carries an arbitrary status; this is the narrow, common case.
+ */
+export class NotFoundError extends Error {
+  readonly status = 404;
+  constructor(message = 'Not found') {
+    super(message);
+    this.name = 'NotFoundError';
+  }
+}

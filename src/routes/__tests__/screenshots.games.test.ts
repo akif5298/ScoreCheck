@@ -26,6 +26,9 @@ jest.mock('@/services/mappingService', () => ({
 }));
 
 jest.mock('@/middleware/auth', () => ({
+  // Mirrors the real helper: the mocked authenticateToken above sets req.user.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  requireUserId: (req: any) => req.user?.userId,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   authenticateToken: (req: any, _res: any, next: any) => {
     req.user = { userId: 'test-user-123', email: 'test@example.com', role: 'USER' };

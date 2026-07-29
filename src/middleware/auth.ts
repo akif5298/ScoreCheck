@@ -34,6 +34,23 @@ export const authenticateToken = async (
   }
 };
 
+/**
+ * Reads the authenticated user id, throwing if authenticateToken has not run.
+ *
+ * The mirror of requireSquadId in middleware/squad.ts, and it exists for the same reason:
+ * handlers used to re-check `if (!req.user)` and return their own 401, which could never
+ * fire — authenticateToken rejects first, and resolveSquad rejects again after it. Those
+ * branches were dead, but deleting them left `req.user` typed as possibly-undefined at
+ * every use. This narrows it in one place and fails loudly rather than letting `undefined`
+ * reach a database column.
+ */
+export function requireUserId(req: Request): string {
+  if (!req.user) {
+    throw new Error('req.user is not set — authenticateToken middleware must run first');
+  }
+  return req.user.userId;
+}
+
 export const optionalAuth = async (
   req: Request,
   res: Response,

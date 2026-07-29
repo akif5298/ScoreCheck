@@ -20,6 +20,9 @@ jest.mock('@/services/database', () => ({
 }));
 
 jest.mock('@/middleware/auth', () => ({
+  // Mirrors the real helper: the mocked authenticateToken above sets req.user.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  requireUserId: (req: any) => req.user?.userId,
   authenticateToken: jest.fn((req: any, _res: any, next: any) => {
     req.user = { userId: 'admin-1', email: 'admin@example.com', role: 'ADMIN' };
     next();

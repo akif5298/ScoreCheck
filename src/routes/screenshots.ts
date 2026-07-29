@@ -8,7 +8,7 @@ import { fromBuffer as fileTypeFromBuffer } from 'file-type';
 import supabaseService, { DuplicateGameError } from '@/services/supabase';
 import { EnhancedOCRService } from '@/services/enhancedOCRService';
 import BoxScoreParser from '@/services/boxScoreParser';
-import { authenticateToken } from '@/middleware/auth';
+import { authenticateToken, requireUserId } from '@/middleware/auth';
 import { resolveSquad, requireSquadId } from '@/middleware/squad';
 import { getMembership } from '@/services/squadService';
 import { ApiResponse, Game, Player } from '@/types';
@@ -205,14 +205,6 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
       return res.status(400).json(response);
     }
 
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     // Fail fast with a clean 503 if the extraction host is down (the per-call
     // paths below swallow failures into empty results).
     await assertExtractionHostReachable();
@@ -255,7 +247,7 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
 
         // Upload to Supabase
         const imageNumber = extractImageNumber(file.originalname);
-        const userId = req.user!.userId;
+        const userId = requireUserId(req);
         // Unique suffix: imageNumber is scraped from the filename, and phone counters reset,
         // so two distinct games could yield the same path. uploadImage uses upsert:true, so a
         // collision silently overwrote the earlier screenshot in Storage.
@@ -275,7 +267,7 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
       results.push(...batchResults);
     }
 
-    recordExtractions(req.user.userId, results.length);
+    recordExtractions(requireUserId(req), results.length);
 
     const response: ApiResponse = {
       success: true,
@@ -312,14 +304,6 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
         error: 'No file uploaded',
       };
       return res.status(400).json(response);
-    }
-
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
     }
 
     // Fail fast with a clean 503 if the extraction host is down.
@@ -410,7 +394,7 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
     const ext = req.file.originalname.split('.').pop() || 'jpg';
     // Unique suffix — see the note in /upload-multiple: colliding paths silently overwrote
     // an earlier screenshot because uploadImage uses upsert:true.
-    const objectPath = `${req.user.userId}-${imageNumber}-${randomUUID().slice(0, 8)}-boxscore.${ext}`;
+    const objectPath = `${requireUserId(req)}-${imageNumber}-${randomUUID().slice(0, 8)}-boxscore.${ext}`;
     const originalImageUrl = await supabaseService.uploadImage(req.file.buffer, objectPath);
     pendingHashes.set(originalImageUrl, imageHash);
     const responseData = {
@@ -428,7 +412,7 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
       originalFileName: req.file.originalname,
     };
 
-    recordExtractions(req.user.userId, 1);
+    recordExtractions(requireUserId(req), 1);
 
     // Explicitly prevent caching of dynamic OCR results
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -460,14 +444,6 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
 // Save the reviewed data to the database
 router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     const { gameData, playersData, imageUrl, originalFileName } = req.body as {
       gameData: {
         date?: string;
@@ -697,7 +673,7 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
           processed: true,
           squadId: requireSquadId(req),
           // Attribution + delete/move rights. Distinct from squadId, which controls access.
-          uploadedByUserId: req.user.userId,
+          uploadedByUserId: requireUserId(req),
         },
         playerInputs,
         homeTeamInput,
@@ -799,14 +775,6 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
 // Get all games for a user
 router.get('/games', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
 
     const response: ApiResponse<Game[]> = {
@@ -831,14 +799,6 @@ router.get('/games', authenticateToken, resolveSquad, async (req: Request, res: 
 router.get('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     const { gameId } = req.params;
-
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
 
     const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
     const game = games.find(g => g.id === gameId);
@@ -875,10 +835,6 @@ router.get('/games/:gameId/screenshot', authenticateToken, resolveSquad, async (
   try {
     const { gameId } = req.params;
 
-    if (!req.user) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' } as ApiResponse);
-    }
-
     const game = await supabaseService.getGameById(gameId!, requireSquadId(req));
     if (!game) {
       return res.status(404).json({ success: false, error: 'Game not found' } as ApiResponse);
@@ -899,14 +855,6 @@ router.get('/games/:gameId/screenshot', authenticateToken, resolveSquad, async (
 // Generate custom team names after player name assignment
 router.post('/generate-team-names', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
-
     const { players } = req.body;
 
     if (!players || !Array.isArray(players)) {
@@ -952,14 +900,6 @@ router.put('/games/:gameId', authenticateToken, resolveSquad, async (req: Reques
   try {
     const { gameId } = req.params;
     const { homeTeam, awayTeam, homeScore, awayScore, date, players } = req.body;
-
-    if (!req.user) {
-      const response: ApiResponse = {
-        success: false,
-        error: 'User not authenticated',
-      };
-      return res.status(401).json(response);
-    }
 
     if (!homeTeam || !awayTeam || homeScore === undefined || awayScore === undefined || !date || !players) {
       const response: ApiResponse = {
@@ -1019,22 +959,18 @@ router.put('/games/:gameId', authenticateToken, resolveSquad, async (req: Reques
  */
 router.delete('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    if (!req.user) {
-      return res.status(401).json({ success: false, error: 'User not authenticated' } as ApiResponse);
-    }
-
     const { gameId } = req.params;
     const squadId = requireSquadId(req);
 
     // resolveSquad already proved membership; this reads the role, which decides whether a
     // non-uploader may delete.
-    const membership = await getMembership(req.user.userId, squadId);
+    const membership = await getMembership(requireUserId(req), squadId);
     if (!membership) {
       return res.status(404).json({ success: false, error: 'Squad not found' } as ApiResponse);
     }
 
     const result = await supabaseService.deleteGameForSquad(gameId!, squadId, {
-      userId: req.user.userId,
+      userId: requireUserId(req),
       isOwner: membership.role === 'OWNER',
     });
 

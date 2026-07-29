@@ -235,7 +235,15 @@ export class OllamaExtractionError extends Error {
 
 // ── JSON extraction helpers ───────────────────────────────────────────────────
 
-function extractJSON(raw: string): unknown {
+/**
+ * Recovers a JSON value from whatever the model actually emitted.
+ *
+ * Exported for tests only -- nothing outside this module calls it. Every repair step below
+ * exists because a real extraction hit it, but reaching them through extractBoxScore means
+ * going through the per-row retries and the full-image fallback, which sleep RETRY_DELAY
+ * between attempts. Exported, the same paths are exercised in milliseconds.
+ */
+export function extractJSON(raw: string): unknown {
   try { return JSON.parse(raw); } catch { /* continue */ }
 
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -270,7 +278,8 @@ function toNum(v: unknown): number {
   return isNaN(n) ? 0 : n;
 }
 
-function parsePlayer(raw: unknown): ExtractedPlayer {
+/** Normalises one model row into an ExtractedPlayer. Exported for tests only -- see extractJSON. */
+export function parsePlayer(raw: unknown): ExtractedPlayer {
   if (!raw || typeof raw !== 'object') {
     throw new OllamaExtractionError('Invalid player object', JSON.stringify(raw));
   }

@@ -50,7 +50,15 @@ export class PreprocessorError extends Error {
   }
 }
 
+/**
+ * The caller sent something the server cannot accept.
+ *
+ * Carries `status` for the same reason [NotFoundError] does: the global error handler maps
+ * any error with a status generically, so one that escapes a route still answers 400
+ * instead of a 500 that blames the server for the caller's input.
+ */
 export class ValidationError extends Error {
+  readonly status = 400;
   readonly field: string | undefined;
   constructor(message: string, field?: string) {
     super(message);

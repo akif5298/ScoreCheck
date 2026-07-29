@@ -43,33 +43,47 @@ const rawSchema = z
     EXTRACTION_DAILY_LIMIT: z.coerce.number().int().positive().default(50),
     MAX_FILE_SIZE: z.coerce.number().int().positive().optional(),
     PG_POOL_MAX: z.coerce.number().int().positive().optional(),
-  })
-  .superRefine((val, ctx) => {
-    if (!val.SUPABASE_PUBLISHABLE_KEY && !val.SUPABASE_ANON_KEY) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Set SUPABASE_PUBLISHABLE_KEY (or legacy SUPABASE_ANON_KEY)',
-        path: ['SUPABASE_PUBLISHABLE_KEY'],
-      });
-    }
-    if (!val.SUPABASE_SECRET_KEY && !val.SUPABASE_SERVICE_ROLE_KEY) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Set SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY)',
-        path: ['SUPABASE_SECRET_KEY'],
-      });
-    }
   });
 
+/**
+ * The two Supabase keys each accept a current or a legacy name, so "at least one of the
+ * pair" is a cross-field rule rather than a per-field one.
+ *
+ * Deliberately not a .superRefine: zod skips refinements as soon as any field fails, so a
+ * fresh deployment missing DATABASE_URL *and* both key pairs would be told only about
+ * DATABASE_URL, fix it, redeploy, and only then learn about the keys. Checking the pairs
+ * independently reports everything in one pass.
+ */
+function keyPairIssues(source: NodeJS.ProcessEnv): string[] {
+  const issues: string[] = [];
+  if (!source.SUPABASE_PUBLISHABLE_KEY && !source.SUPABASE_ANON_KEY) {
+    issues.push('SUPABASE_PUBLISHABLE_KEY: Set SUPABASE_PUBLISHABLE_KEY (or legacy SUPABASE_ANON_KEY)');
+  }
+  if (!source.SUPABASE_SECRET_KEY && !source.SUPABASE_SERVICE_ROLE_KEY) {
+    issues.push('SUPABASE_SECRET_KEY: Set SUPABASE_SECRET_KEY (or legacy SUPABASE_SERVICE_ROLE_KEY)');
+  }
+  return issues;
+}
+
+function reportAndExit(issues: string[]): never {
+  const formatted = issues.map((i) => `  - ${i}`).join('\n');
+  // eslint-disable-next-line no-console
+  console.error(`\nInvalid environment configuration:\n${formatted}\n`);
+  process.exit(1);
+}
+
 const parsed = rawSchema.safeParse(process.env);
+const pairIssues = keyPairIssues(process.env);
 
 if (!parsed.success) {
-  const issues = parsed.error.issues
-    .map((i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`)
-    .join('\n');
-  // eslint-disable-next-line no-console
-  console.error(`\nInvalid environment configuration:\n${issues}\n`);
-  process.exit(1);
+  reportAndExit([
+    ...parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`),
+    ...pairIssues,
+  ]);
+}
+
+if (pairIssues.length > 0) {
+  reportAndExit(pairIssues);
 }
 
 const e = parsed.data;

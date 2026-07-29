@@ -12,6 +12,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 import logger from '@/utils/logger';
+import { errorHandler } from '@/middleware/errorHandler';
 import { pgPool } from '@/services/supabase';
 import { prisma } from '@/services/database';
 
@@ -166,84 +167,49 @@ if (clientBuildExists) {
 }
 
 // Global error handler
-app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  logger.error({ err: error }, 'Unhandled request error');
+app.use(errorHandler);
 
-  // Handle multer errors
-  if (error.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({
-      success: false,
-      error: 'File too large. Maximum size is 10MB.',
-    });
-  }
-
-  if (error.code === 'LIMIT_UNEXPECTED_FILE') {
-    return res.status(400).json({
-      success: false,
-      error: 'Unexpected file field.',
-    });
-  }
-
-  // Handle validation errors
-  if (error.name === 'ValidationError') {
-    return res.status(400).json({
-      success: false,
-      error: 'Validation error',
-      details: error.message,
-    });
-  }
-
-  // Handle Prisma errors
-  if (error.code === 'P2002') {
-    return res.status(409).json({
-      success: false,
-      error: 'Duplicate entry',
-    });
-  }
-
-  // Default error response
-  return res.status(500).json({
-    success: false,
-    error: process.env.NODE_ENV === 'production' 
-      ? 'Internal server error' 
-      : error.message,
+// Start the server only when this file is the process entrypoint.
+//
+// Importing it — tests, tooling — must yield a configured app and nothing else. Binding a
+// port at import time leaks a handle no importer can close, and every import would stack
+// another pair of process listeners. Everything below is therefore start-up behaviour, not
+// app behaviour; `app` itself is fully wired by the time this runs.
+if (require.main === module) {
+  const server = app.listen(PORT, () => {
+    logger.info({ port: PORT, env: env.NODE_ENV }, 'ScoreCheck server started');
   });
-});
 
-// Start server
-const server = app.listen(PORT, () => {
-  logger.info({ port: PORT, env: env.NODE_ENV }, 'ScoreCheck server started');
-});
+  // Graceful shutdown: stop accepting connections, drain in-flight requests,
+  // then close DB handles. Force-exit if draining stalls.
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info({ signal }, 'Shutting down gracefully');
 
-// Graceful shutdown: stop accepting connections, drain in-flight requests,
-// then close DB handles. Force-exit if draining stalls.
-let shuttingDown = false;
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  logger.info({ signal }, 'Shutting down gracefully');
+    const forceExit = setTimeout(() => {
+      logger.error('Graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, 10_000);
+    forceExit.unref();
 
-  const forceExit = setTimeout(() => {
-    logger.error('Graceful shutdown timed out; forcing exit');
-    process.exit(1);
-  }, 10_000);
-  forceExit.unref();
+    server.close(async () => {
+      try {
+        await pgPool.end();
+        await prisma.$disconnect();
+      } catch (err) {
+        logger.error({ err }, 'Error closing database connections during shutdown');
+      } finally {
+        clearTimeout(forceExit);
+        process.exit(0);
+      }
+    });
+  };
 
-  server.close(async () => {
-    try {
-      await pgPool.end();
-      await prisma.$disconnect();
-    } catch (err) {
-      logger.error({ err }, 'Error closing database connections during shutdown');
-    } finally {
-      clearTimeout(forceExit);
-      process.exit(0);
-    }
-  });
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
-
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
-process.on('SIGINT', () => void shutdown('SIGINT'));
 
 export default app;
 

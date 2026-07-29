@@ -11,3 +11,24 @@ afterEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
 });
+
+/**
+ * jsdom implements neither the Pointer Events capture API nor ResizeObserver, and Radix's
+ * dropdown/dialog/select primitives call both while opening. Without these, every menu in
+ * the app throws "target.hasPointerCapture is not a function" the moment a test clicks it.
+ */
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}

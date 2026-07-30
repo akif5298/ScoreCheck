@@ -40,9 +40,14 @@ const config: Config = {
     '!src/types/supabase.ts',
   ],
 
-  // Floors, not targets. Set a shade under what the suite actually reaches (96.8 statements /
-  // 91.09 branches / 96.36 functions / 97.44 lines) so ordinary refactoring has room to move
+  // Floors, not targets. Set a shade under what the suite actually reaches (96.73 statements /
+  // 90.38 branches / 96.29 functions / 97.39 lines) so ordinary refactoring has room to move
   // while a whole file landing untested fails the build.
+  //
+  // These actuals dipped slightly when the seven dead player_stats/player_totals aggregate
+  // helpers were deleted: they were fully covered, so removing them removed more covered
+  // code than uncovered. Branches has the least headroom (0.38) — if a change trips that
+  // floor, check it is genuinely new uncovered branching before touching the number.
   //
   // Only enforced when coverage is collected, which is why CI runs `test:coverage` rather than
   // plain `jest` — a bare `npm test` still passes on an uncovered file, by design, so the

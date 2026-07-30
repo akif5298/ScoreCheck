@@ -5,8 +5,6 @@
  * These helpers used to catch and return null/[]/0 on failure, which made callers take
  * their not-found branch and write incorrect rows:
  *   - getGameByScreenshotUrl → null read as "not a duplicate" → duplicate game saved.
- *   - getPlayerTotalsByPlayerName → null read as "no totals yet" → fresh totals row INSERTed
- *     over a player's real cumulative history.
  *
  * Every other suite mocks '@/services/supabase' wholesale, so these code paths are
  * otherwise never executed by the test suite.
@@ -45,12 +43,9 @@ describe('SupabaseService read helpers — DB error propagation', () => {
 
   const cases: Array<[string, () => Promise<unknown>]> = [
     ['getGameByScreenshotUrl', () => supabaseService.getGameByScreenshotUrl('object/path.jpg', 'u1')],
-    ['getPlayerTotalsByPlayerName', () => supabaseService.getPlayerTotalsByPlayerName('Akif', 'u1')],
-    ['getPlayerStatsByPlayerName', () => supabaseService.getPlayerStatsByPlayerName('Akif', 'u1')],
     ['getGameById', () => supabaseService.getGameById('game-1', 'u1')],
     ['getGamesBySquadId', () => supabaseService.getGamesBySquadId('u1')],
     ['getPlayerStats', () => supabaseService.getPlayerStats('u1')],
-    ['getPlayerTotalsBySquadId', () => supabaseService.getPlayerTotalsBySquadId('u1')],
     ['getDistinctPlayerCount', () => supabaseService.getDistinctPlayerCount('u1')],
   ];
 
@@ -62,7 +57,6 @@ describe('SupabaseService read helpers — DB error propagation', () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
     await expect(supabaseService.getGameByScreenshotUrl('missing.jpg', 'u1')).resolves.toBeNull();
-    await expect(supabaseService.getPlayerTotalsByPlayerName('Nobody', 'u1')).resolves.toBeNull();
     await expect(supabaseService.getGamesBySquadId('u1')).resolves.toEqual([]);
   });
 });

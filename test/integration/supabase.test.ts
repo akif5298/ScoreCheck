@@ -50,6 +50,21 @@ async function seedPlayer(
   });
 }
 
+/**
+ * Reads a player_totals row directly. This is byte-for-byte the query the deleted
+ * `getPlayerTotalsByPlayerName` helper ran; it was removed as dead production code, but
+ * the recompute assertions below are about what recomputeSquadAggregates WROTE, so they
+ * still need a read path.
+ */
+async function readTotals(playerName: string, squadId: string) {
+  const result = await pgPool.query(
+    `SELECT * FROM player_totals
+     WHERE player_name = $1 AND squadid = $2`,
+    [playerName, squadId],
+  );
+  return result.rows[0] || null;
+}
+
 // ── Users ────────────────────────────────────────────────────────────────────────
 
 describe('user helpers', () => {
@@ -392,245 +407,6 @@ describe('getGameByScreenshotUrl', () => {
   });
 });
 
-// ── player_stats ─────────────────────────────────────────────────────────────────
-
-describe('player_stats helpers', () => {
-  async function seedStats(squadId: string, over: Record<string, unknown> = {}) {
-    return svc.createPlayerStats({
-      playerName: 'Akif',
-      team: 'Team A',
-      squadId,
-      totalPoints: 100,
-      ...over,
-    });
-  }
-
-  it('createPlayerStats defaults gamesPlayed to 1 and zero-fills totals', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-
-    const row = await seedStats(squad.id, { totalPoints: undefined });
-
-    expect(row.gamesPlayed).toBe(1);
-    expect(Number(row.totalPoints)).toBe(0);
-    expect(Number(row.avgPlusMinus)).toBe(0);
-  });
-
-  it('getPlayerStatsByPlayerName scopes to the squad', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    const other = await makeSquad(user.id);
-    await seedStats(squad.id);
-
-    await expect(svc.getPlayerStatsByPlayerName('Akif', squad.id)).resolves.toMatchObject({
-      playerName: 'Akif',
-    });
-    await expect(svc.getPlayerStatsByPlayerName('Akif', other.id)).resolves.toBeNull();
-  });
-
-  it('getPlayerStats orders by totalPoints descending', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    await seedStats(squad.id, { playerName: 'Low', totalPoints: 10 });
-    await seedStats(squad.id, { playerName: 'High', totalPoints: 90 });
-
-    const rows = await svc.getPlayerStats(squad.id);
-
-    expect(rows.map((r: any) => r.playerName)).toEqual(['High', 'Low']);
-  });
-
-  it('allows only one stats row per (squadId, playerName), regardless of team', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    await seedStats(squad.id, { team: 'Team A', totalPoints: 10 });
-
-    // player_stats carries TWO overlapping unique indexes:
-    //   player_stats_squadId_playerName_team_key  UNIQUE (squadId, playerName, team)
-    //   player_stats_player_name_squadid_unique   UNIQUE (playerName, squadId)
-    // The second is strictly stronger and subsumes the first, so the same name cannot
-    // appear twice in a squad even under a different team. This is why
-    // updatePlayerStats' `WHERE playerName AND squadId` is correct rather than, as an
-    // earlier audit note claimed, missing a team predicate.
-    await expect(seedStats(squad.id, { team: 'Team B', totalPoints: 20 })).rejects.toThrow(
-      /player_stats_player_name_squadid_unique/,
-    );
-  });
-
-  it('updatePlayerStats writes every field through to the single matching row', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    await seedStats(squad.id, { team: 'Team A', totalPoints: 10 });
-
-    await svc.updatePlayerStats('Akif', squad.id, {
-      gamesPlayed: 5,
-      totalPoints: 999,
-      avgPoints: 1,
-      avgRebounds: 0,
-      avgAssists: 0,
-      avgSteals: 0,
-      avgBlocks: 0,
-      avgTurnovers: 0,
-      avgFouls: 0,
-      avgFgPercentage: 0,
-      avgThreePercentage: 0,
-      avgFtPercentage: 0,
-      totalRebounds: 0,
-      totalAssists: 0,
-      totalSteals: 0,
-      totalBlocks: 0,
-      totalTurnovers: 0,
-      totalFouls: 0,
-      totalFgMade: 0,
-      totalFgAttempted: 0,
-      totalThreeMade: 0,
-      totalThreeAttempted: 0,
-      totalFtMade: 0,
-      totalFtAttempted: 0,
-    });
-
-    const { rows } = await pgPool.query(
-      'SELECT team, "gamesPlayed", "totalPoints" FROM player_stats WHERE "squadId" = $1',
-      [squad.id],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].gamesPlayed).toBe(5);
-    expect(Number(rows[0].totalPoints)).toBe(999);
-    // team is not in the SET list, so it survives the update untouched.
-    expect(rows[0].team).toBe('Team A');
-  });
-
-  it('KNOWN BUG: updatePlayerTotals keys on player_name, but the unique index is on player_id', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    // player_totals is UNIQUE (player_id, squadid) — nothing stops one name spanning two
-    // player_ids, and updatePlayerTotals' WHERE omits player_id entirely.
-    await svc.createPlayerTotals({
-      id: 'totals-a',
-      player_id: 'pid-a',
-      player_name: 'Akif',
-      team: 'Team A',
-      squadid: squad.id,
-      total_points: 10,
-    });
-    await svc.createPlayerTotals({
-      id: 'totals-b',
-      player_id: 'pid-b',
-      player_name: 'Akif',
-      team: 'Team B',
-      squadid: squad.id,
-      total_points: 20,
-    });
-
-    await svc.updatePlayerTotals('Akif', squad.id, {
-      total_games: 1,
-      total_points: 777,
-      total_assists: 0,
-      total_rebounds: 0,
-      total_steals: 0,
-      total_blocks: 0,
-      total_fouls: 0,
-      total_turnovers: 0,
-      total_fgm: 0,
-      total_fga: 0,
-      total_3pm: 0,
-      total_3pa: 0,
-      total_ftm: 0,
-      total_fta: 0,
-      fg_percentage: 0,
-      three_percentage: 0,
-      ft_percentage: 0,
-    });
-
-    const { rows } = await pgPool.query(
-      'SELECT total_points FROM player_totals WHERE squadid = $1 ORDER BY id',
-      [squad.id],
-    );
-    // Both rows are overwritten. Pinned as-is: recomputeSquadAggregates wipes and rebuilds
-    // these rows, so the live path never hits it — but the method itself is unsafe.
-    expect(rows.map((r: any) => Number(r.total_points))).toEqual([777, 777]);
-  });
-});
-
-// ── player_totals ────────────────────────────────────────────────────────────────
-
-describe('player_totals helpers', () => {
-  async function seedTotals(squadId: string, over: Record<string, unknown> = {}) {
-    return svc.createPlayerTotals({
-      id: `totals_${Math.random().toString(36).slice(2)}`,
-      player_id: 'p1',
-      player_name: 'Akif',
-      team: 'Team A',
-      squadid: squadId,
-      ...over,
-    });
-  }
-
-  it('createPlayerTotals defaults total_games to 1 and zero-fills the rest', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-
-    const row = await seedTotals(squad.id);
-
-    expect(row.total_games).toBe(1);
-    expect(Number(row.total_points)).toBe(0);
-    expect(Number(row.fg_percentage)).toBe(0);
-  });
-
-  it('getPlayerTotalsByPlayerName scopes to the squad', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    const other = await makeSquad(user.id);
-    await seedTotals(squad.id);
-
-    await expect(svc.getPlayerTotalsByPlayerName('Akif', squad.id)).resolves.toMatchObject({
-      player_name: 'Akif',
-    });
-    await expect(svc.getPlayerTotalsByPlayerName('Akif', other.id)).resolves.toBeNull();
-  });
-
-  it('getPlayerTotalsBySquadId orders by player_name', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    await seedTotals(squad.id, { player_name: 'Zed', player_id: 'z' });
-    await seedTotals(squad.id, { player_name: 'Akif', player_id: 'a' });
-
-    const rows = await svc.getPlayerTotalsBySquadId(squad.id);
-
-    expect(rows.map((r: any) => r.player_name)).toEqual(['Akif', 'Zed']);
-  });
-
-  it('updatePlayerTotals writes every counter through', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-    await seedTotals(squad.id);
-
-    await svc.updatePlayerTotals('Akif', squad.id, {
-      total_games: 3,
-      total_points: 60,
-      total_assists: 9,
-      total_rebounds: 12,
-      total_steals: 3,
-      total_blocks: 2,
-      total_fouls: 6,
-      total_turnovers: 4,
-      total_fgm: 20,
-      total_fga: 40,
-      total_3pm: 5,
-      total_3pa: 12,
-      total_ftm: 15,
-      total_fta: 18,
-      fg_percentage: 50,
-      three_percentage: 41.67,
-      ft_percentage: 83.33,
-    });
-
-    const row = await svc.getPlayerTotalsByPlayerName('Akif', squad.id);
-    expect(row.total_games).toBe(3);
-    expect(Number(row.total_points)).toBe(60);
-    expect(Number(row.fg_percentage)).toBeCloseTo(50, 2);
-  });
-});
-
 // ── Aggregates ───────────────────────────────────────────────────────────────────
 
 describe('recomputeSquadAggregates', () => {
@@ -661,7 +437,7 @@ describe('recomputeSquadAggregates', () => {
     const result = await svc.recomputeSquadAggregates(squad.id);
 
     expect(result).toEqual({ players: 1 });
-    const totals = await svc.getPlayerTotalsByPlayerName('Akif', squad.id);
+    const totals = await readTotals('Akif', squad.id);
     expect(Number(totals.total_points)).toBe(20);
     await expect(countRows('player_stats', squad.id)).resolves.toBe(1);
   });
@@ -680,7 +456,7 @@ describe('recomputeSquadAggregates', () => {
     await svc.recomputeSquadAggregates(squad.id);
     await svc.recomputeSquadAggregates(squad.id);
 
-    const totals = await svc.getPlayerTotalsByPlayerName('Akif', squad.id);
+    const totals = await readTotals('Akif', squad.id);
     // A full rebuild must not double-count — this is the property that replaced the
     // old incremental delta logic.
     expect(Number(totals.total_points)).toBe(20);
@@ -1079,40 +855,6 @@ describe('write helpers rethrow database errors', () => {
         squadId: squad.id,
         points: BAD_NUMBER,
       }),
-    ).rejects.toThrow();
-  });
-
-  it('createPlayerTotals rethrows', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-
-    await expect(
-      svc.createPlayerTotals({
-        id: 'bad',
-        player_id: 'p',
-        player_name: 'Akif',
-        team: 'A',
-        squadid: squad.id,
-        total_points: BAD_NUMBER,
-      }),
-    ).rejects.toThrow();
-  });
-
-  it('updatePlayerTotals rethrows', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-
-    await expect(
-      svc.updatePlayerTotals('Akif', squad.id, { total_games: BAD_NUMBER }),
-    ).rejects.toThrow();
-  });
-
-  it('updatePlayerStats rethrows', async () => {
-    const user = await makeUser();
-    const squad = await makeSquad(user.id);
-
-    await expect(
-      svc.updatePlayerStats('Akif', squad.id, { gamesPlayed: BAD_NUMBER }),
     ).rejects.toThrow();
   });
 

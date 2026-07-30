@@ -15,6 +15,8 @@ jest.mock('@/services/supabase', () => ({
   __esModule: true,
   default: {
     updateGame: jest.fn(),
+    getGameById: jest.fn(),
+    getGamesBySquadId: jest.fn(),
   },
 }));
 
@@ -76,6 +78,31 @@ describe('POST /games/:gameId/start-edit', () => {
     const res = await request(app).post('/games/game-1/start-edit');
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /games/:gameId', () => {
+  it('looks the game up by id instead of scanning every game in the squad', async () => {
+    // The route used to call getGamesBySquadId() and .find() the id out of the result —
+    // O(n) over a list that grows ~5x under a shared squad, and inconsistent with the two
+    // sibling routes that already use getGameById. Squad scoping lives in that query.
+    mocked.getGameById.mockResolvedValue({ id: 'game-1', homeTeam: 'Team A' } as never);
+
+    const res = await request(app).get('/games/game-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ id: 'game-1' });
+    expect(mocked.getGameById).toHaveBeenCalledWith('game-1', 'test-squad-1');
+    expect(mocked.getGamesBySquadId).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the game is missing or belongs to another squad', async () => {
+    mocked.getGameById.mockResolvedValue(null as never);
+
+    const res = await request(app).get('/games/foreign-game');
+
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
   });
 });
 

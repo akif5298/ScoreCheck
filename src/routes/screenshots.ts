@@ -20,6 +20,7 @@ import {
   DUPLICATE_HAMMING_THRESHOLD,
 } from '@/utils/imageHash';
 import { ValidationError, ExtractionUnavailableError } from '@/errors';
+import { TtlMap } from '@/utils/ttlMap';
 import logger from '@/utils/logger';
 import {
   getMappingsForSquad,
@@ -36,8 +37,19 @@ import {
 
 const router = Router();
 
-// Bridges perceptual hashes from upload time to save time (single-instance only; lost on restart)
-const pendingHashes = new Map<string, string>();
+// Bridges perceptual hashes from upload time to save time (single-instance only; lost on restart).
+//
+// Bounded and self-expiring: entries are removed on the terminal paths (a committed save,
+// or a duplicate), but an upload abandoned at the review step has no terminal path and used
+// to pin its entry for the lifetime of the process.
+//
+// Six hours is far longer than a review takes while still bounding growth; the cap is the
+// backstop if something goes wrong. Losing an entry is safe — the save path reads a miss as
+// "no hash known" and stores the game without one, which only costs future dedup on that
+// single screenshot.
+const PENDING_HASH_TTL_MS = 6 * 60 * 60 * 1000;
+const PENDING_HASH_MAX_ENTRIES = 5000;
+const pendingHashes = new TtlMap<string>(PENDING_HASH_TTL_MS, PENDING_HASH_MAX_ENTRIES);
 
 // Incoming player data shape from the review UI (all fields optional until validated)
 interface IncomingPlayerData {
@@ -109,18 +121,63 @@ function recordExtractions(userId: string, n: number): void {
   else extractionCounts.set(userId, { day, count: n });
 }
 
-// Gate: rejects when the user is already at their daily limit. Per-file counts
-// are recorded by the handlers after extraction actually runs.
+// Hands back reservations that were never spent. Floors at zero so a refund can never
+// mint allowance, and ignores a stale day so a refund crossing midnight cannot decrement
+// the new day's count.
+function refundExtractions(userId: string, n: number): void {
+  if (n <= 0) return;
+  const entry = extractionCounts.get(userId);
+  if (entry && entry.day === todayKey()) {
+    entry.count = Math.max(0, entry.count - n);
+  }
+}
+
+// How many extractions this request is asking for. Used by both the gate and the
+// handler's reconciliation so the two can never disagree about what was reserved.
+function extractionCost(req: Request): number {
+  if (Array.isArray(req.files)) return req.files.length;
+  return req.file ? 1 : 0;
+}
+
+// Gate: reserves the whole request's cost before any inference runs.
+//
+// This used to check `used >= limit` and let the handlers record afterwards, which meant
+// the limit was only ever enforced against a count that predated the batch: a user at
+// 49/50 could send 10 files and land at 59. Reserving up front makes an over-limit batch
+// fail as a unit.
+//
+// Runs AFTER multer, unlike the check it replaces — the file count is the thing being
+// authorised, and req.files does not exist until multer has parsed the body. uploadRateLimit
+// still runs first, so the cheap abuse ceiling is unchanged.
+//
+// Whatever is reserved here and not spent is refunded by the handler; see extractionCost.
 function extractionQuota(req: Request, res: Response, next: () => void): void {
   const userId = req.user?.userId;
-  if (userId && extractionUsedToday(userId) >= EXTRACTION_DAILY_LIMIT) {
+  if (!userId) return next();
+
+  const requested = extractionCost(req);
+  // No files: the handler owns that 400, and it costs no inference.
+  if (requested === 0) return next();
+
+  if (extractionUsedToday(userId) + requested > EXTRACTION_DAILY_LIMIT) {
     res.status(429).json({
       success: false,
       error: `Daily extraction limit reached (${EXTRACTION_DAILY_LIMIT}/day). Try again tomorrow.`,
     } as ApiResponse);
     return;
   }
+
+  recordExtractions(userId, requested);
   next();
+}
+
+// The batch path signals a duplicate by tagging an Error with a code, because it has to
+// unwind out of a per-file promise rather than return a response directly.
+function isDuplicateScreenshotError(error: unknown): error is Error & { code: string } {
+  return (
+    error instanceof Error &&
+    (error as { code?: unknown }).code === 'DUPLICATE_SCREENSHOT'
+  );
 }
 
 // Rejects buffers whose magic bytes don't match an allowed image type.
@@ -193,7 +250,12 @@ router.post('/warmup', authenticateToken, warmupRateLimit, (_req: Request, res: 
   res.status(202).json({ success: true, message: 'Warming extraction host' } as ApiResponse);
 });
 
-router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit, extractionQuota, upload.array('screenshots', 10), async (req: Request, res: Response) => {
+router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit, upload.array('screenshots', 10), extractionQuota, async (req: Request, res: Response) => {
+  // Reserved by extractionQuota above; reconciled in the finally below so a batch is
+  // charged for exactly the files that reached the GPU, whether it succeeded or not.
+  const quotaUserId = req.user?.userId;
+  const reserved = extractionCost(req);
+  let extracted = 0;
   try {
     const files = req.files as Express.Multer.File[];
 
@@ -209,6 +271,44 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
     // paths below swallow failures into empty results).
     await assertExtractionHostReachable();
 
+    // Validate and de-duplicate every file BEFORE any of them reaches the GPU.
+    //
+    // This used to live inside the per-file work below, where each file was compared only
+    // against the hashes already committed to the database. Nothing in this request was
+    // saved yet, so two copies of the same screenshot in one request both passed and the
+    // squad ended up holding the game twice. A file now has to clear the committed set
+    // *and* every file accepted ahead of it here.
+    //
+    // Sequential on purpose: the loop below runs its files concurrently, so a running set
+    // filled in there would race — two matching files in the same pair could each check
+    // before the other inserted. Walking the files in order also makes which copy gets
+    // rejected deterministic, and lets the committed hashes be fetched once rather than
+    // once per file.
+    const committedHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
+    const hashByFile = new Map<Express.Multer.File, string>();
+    const acceptedHashes: string[] = [];
+
+    for (const file of files) {
+      // Reject files whose bytes don't match an image type before hitting OCR
+      await validateMagicBytes(file.buffer);
+
+      const imageHash = await computePerceptualHash(file.buffer);
+      const clashes = (h: string) => hammingDistance(imageHash, h) <= DUPLICATE_HAMMING_THRESHOLD;
+      if (committedHashes.some(clashes)) {
+        throw Object.assign(new Error(`${file.originalname}: visually similar screenshot already saved`), {
+          code: 'DUPLICATE_SCREENSHOT',
+        });
+      }
+      if (acceptedHashes.some(clashes)) {
+        throw Object.assign(new Error(`${file.originalname}: visually similar screenshot uploaded twice in the same request`), {
+          code: 'DUPLICATE_SCREENSHOT',
+        });
+      }
+
+      acceptedHashes.push(imageHash);
+      hashByFile.set(file, imageHash);
+    }
+
     // Process files in batches of 2
     const results = [];
     const batchSize = 2;
@@ -217,20 +317,7 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
       const batch = files.slice(i, i + batchSize);
 
       const batchPromises = batch.map(async (file) => {
-        // Reject files whose bytes don't match an image type before hitting OCR
-        await validateMagicBytes(file.buffer);
-
-        // Perceptual-hash duplicate check (before OCR to avoid wasted GCV calls)
-        const imageHash = await computePerceptualHash(file.buffer);
-        const existingHashes = await supabaseService.getGameHashesBySquadId(requireSquadId(req));
-        const isDuplicate = existingHashes.some(
-          h => hammingDistance(imageHash, h) <= DUPLICATE_HAMMING_THRESHOLD,
-        );
-        if (isDuplicate) {
-          throw Object.assign(new Error(`${file.originalname}: visually similar screenshot already saved`), {
-            code: 'DUPLICATE_SCREENSHOT',
-          });
-        }
+        const imageHash = hashByFile.get(file)!;
 
         // Junk filter — fails open if Ollama is offline.
         const junkResult = await classifyScreenshot(file.buffer);
@@ -241,9 +328,21 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
         const enhancedOCRService = new EnhancedOCRService();
         // Mappings fetched once per batch outside the per-file loop — not available here,
         // so fetch per file (fail-open on error).
+        //
+        // Fail-open is deliberate: a mapping outage should degrade names, not reject the
+        // upload. It is logged rather than swallowed because the degraded result is
+        // otherwise indistinguishable from a squad that simply has no mappings, so a
+        // squad-wide outage would quietly mis-name every player on every upload.
         let fileMappings: Map<string, string> | undefined;
-        try { fileMappings = await getMappingsForSquad(requireSquadId(req)); } catch {}
+        try {
+          fileMappings = await getMappingsForSquad(requireSquadId(req));
+        } catch (err) {
+          logger.warn({ err, fileName: file.originalname }, 'Failed to fetch player mappings — proceeding without mapping');
+        }
         const extractedData = await enhancedOCRService.extractStructuredDataFromImage(file.buffer, file.originalname, fileMappings);
+        // Counted here, not on batch success: a batch that dies partway still burned the
+        // GPU for the files that got this far, and those must stay charged.
+        extracted++;
 
         // Upload to Supabase
         const imageNumber = extractImageNumber(file.originalname);
@@ -267,8 +366,6 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
       results.push(...batchResults);
     }
 
-    recordExtractions(requireUserId(req), results.length);
-
     const response: ApiResponse = {
       success: true,
       data: {
@@ -279,6 +376,16 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
 
     return res.json(response);
   } catch (error) {
+    // A duplicate is a statement about the request, not a server fault. POST /upload has
+    // always answered 409 for the identical condition; this route answered 500, so the
+    // same rejection looked like an outage depending on which endpoint you used.
+    if (isDuplicateScreenshotError(error)) {
+      return res.status(409).json({
+        success: false,
+        code: 'DUPLICATE_SCREENSHOT',
+        error: error.message,
+      });
+    }
     if (error instanceof ExtractionUnavailableError) {
       logger.warn('Extraction host unreachable on upload-multiple');
       return res.status(503).json({
@@ -292,11 +399,16 @@ router.post('/upload-multiple', authenticateToken, resolveSquad, uploadRateLimit
       error: error instanceof Error ? error.message : 'Failed to process images',
     };
     return res.status(error instanceof ValidationError ? 422 : 500).json(response);
+  } finally {
+    if (quotaUserId) refundExtractions(quotaUserId, reserved - extracted);
   }
 });
 
 // Keep the original single upload for backward compatibility
-router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extractionQuota, upload.single('screenshot'), async (req: Request, res: Response) => {
+router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, upload.single('screenshot'), extractionQuota, async (req: Request, res: Response) => {
+  const quotaUserId = req.user?.userId;
+  const reserved = extractionCost(req);
+  let extracted = 0;
   try {
     if (!req.file) {
       const response: ApiResponse = {
@@ -344,6 +456,9 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
     // Create fresh OCR service instance for each request to prevent caching
     const enhancedOCRService = new EnhancedOCRService();
     const extractedData = await enhancedOCRService.extractStructuredDataFromImage(req.file.buffer, req.file.originalname, mappings);
+    // The GPU has now been used; everything above this line exits without spending the
+    // reservation and gets it refunded.
+    extracted++;
 
     if (extractedData.players.length !== 10) {
       logger.warn({ playerCount: extractedData.players.length, file: req.file.originalname }, 'Expected 10 players from OCR');
@@ -412,8 +527,6 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
       originalFileName: req.file.originalname,
     };
 
-    recordExtractions(requireUserId(req), 1);
-
     // Explicitly prevent caching of dynamic OCR results
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -438,6 +551,8 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, extract
 
     res.setHeader('Cache-Control', 'no-store');
     return res.status(error instanceof ValidationError ? 422 : 500).json(response);
+  } finally {
+    if (quotaUserId) refundExtractions(quotaUserId, reserved - extracted);
   }
 });
 
@@ -800,8 +915,10 @@ router.get('/games/:gameId', authenticateToken, resolveSquad, async (req: Reques
   try {
     const { gameId } = req.params;
 
-    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
-    const game = games.find(g => g.id === gameId);
+    // Indexed single-row lookup, not a full squad scan + .find(). getGameById already
+    // scopes by squadId, so a game in another squad reads as missing — same 404, no
+    // membership disclosure.
+    const game = await supabaseService.getGameById(gameId!, requireSquadId(req));
 
     if (!game) {
       const response: ApiResponse = {

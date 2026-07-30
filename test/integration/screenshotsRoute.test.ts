@@ -74,16 +74,40 @@ async function actor() {
   };
 }
 
-/** A real PNG, so multer's filter and validateMagicBytes both see genuine image bytes. */
+/**
+ * A real PNG, so multer's filter and validateMagicBytes both see genuine image bytes.
+ *
+ * Deliberately noisy rather than a flat fill. A perceptual hash encodes gradients, and a
+ * solid-colour image has none: every flat fixture hashed to all zeros whatever its colour,
+ * which made any two of them duplicates of each other (distance 0, against a threshold of
+ * 10). Tests that upload several files in one request were therefore uploading what the
+ * dedup logic considers the same screenshot, and could not express "two different
+ * screenshots" at all.
+ *
+ * Seeded xorshift noise gives distinct seeds a pairwise distance of ~112, while the same
+ * seed still reproduces byte-for-byte — which the duplicate-detection tests depend on.
+ */
 async function pngBuffer(seed = 0): Promise<Buffer> {
-  return sharp({
-    create: {
-      width: 16,
-      height: 16,
-      channels: 3,
-      background: { r: seed % 255, g: (seed * 7) % 255, b: (seed * 13) % 255 },
-    },
-  })
+  const width = 64;
+  const height = 64;
+  const pixels = Buffer.alloc(width * height * 3);
+  // Nonzero state: xorshift is a fixed point at 0 and would emit a flat image again.
+  let state = ((seed + 1) * 2654435761) >>> 0 || 0x9e3779b9;
+  const next = (): number => {
+    state ^= state << 13;
+    state >>>= 0;
+    state ^= state >> 17;
+    state ^= state << 5;
+    state >>>= 0;
+    return state / 4294967296;
+  };
+  for (let i = 0; i < width * height; i++) {
+    const v = Math.floor(next() * 256);
+    pixels[i * 3] = v;
+    pixels[i * 3 + 1] = (v * 3) % 256;
+    pixels[i * 3 + 2] = (v * 7) % 256;
+  }
+  return sharp(pixels, { raw: { width, height, channels: 3 } })
     .png()
     .toBuffer();
 }
@@ -231,8 +255,11 @@ describe('GET /games/:gameId', () => {
 
   it('500s when the read fails', async () => {
     const me = await actor();
+    // Spies the method the route actually calls: it looks a game up by id rather than
+    // scanning the whole squad. The contract under test is unchanged — a failed read must
+    // surface as 500, never as a 404 that reads like "no such game".
     jest
-      .spyOn(supabaseService, 'getGamesBySquadId')
+      .spyOn(supabaseService, 'getGameById')
       .mockRejectedValue(new Error('db down') as never);
 
     const res = await request(app())
@@ -425,8 +452,32 @@ describe('POST /upload-multiple', () => {
       .set('Authorization', me.auth)
       .attach('screenshots', buf, 'IMG_0001.png');
 
-    expect(res.status).toBe(500);
+    // 409, matching POST /upload: a duplicate is a statement about the request, not a
+    // server fault. This route used to answer 500 for the same condition.
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('DUPLICATE_SCREENSHOT');
     expect(res.body.error).toMatch(/visually similar screenshot already saved/);
+  });
+
+  it('rejects a duplicate that exists only within the request itself', async () => {
+    const me = await actor();
+    jest.spyOn(supabaseService, 'uploadImage').mockResolvedValue('stored/path.png');
+
+    // The same screenshot twice, under two filenames. Neither is saved yet, so the
+    // committed-hash check clears both: the collision exists only between the two files
+    // in this one request. Each file used to be compared against the database alone, so
+    // both passed and the squad ended up with the same game twice.
+    const shot = await pngBuffer(4242);
+
+    const res = await request(app())
+      .post('/api/screenshots/upload-multiple')
+      .set('Authorization', me.auth)
+      .attach('screenshots', shot, 'IMG_4242.png')
+      .attach('screenshots', shot, 'IMG_4243.png');
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('DUPLICATE_SCREENSHOT');
+    expect(res.body.error).toMatch(/visually similar/i);
   });
 
   it('rejects an image the junk filter is confident is not a box score', async () => {
@@ -535,6 +586,56 @@ describe('daily extraction quota', () => {
       .attach('screenshot', await pngBuffer(33), 'IMG_0013.png');
 
     expect(second.status).toBe(429);
+  }, 60_000);
+
+  it('refuses a batch that would cross the limit rather than letting it overrun', async () => {
+    const me = await actor();
+    jest.spyOn(supabaseService, 'uploadImage').mockResolvedValue('stored/path.png');
+    const a = app();
+
+    // Burn 1 of the 2 available.
+    const first = await request(a)
+      .post('/api/screenshots/upload')
+      .set('Authorization', me.auth)
+      .attach('screenshot', await pngBuffer(61), 'IMG_6001.png');
+    expect(first.status).toBe(200);
+
+    // 1 used, 2 requested. The gate used to ask only "is used >= limit?" — false at 1 —
+    // so the whole batch extracted and the user landed at 3/2. The cost has to be
+    // reserved against the batch size before any of it runs.
+    const second = await request(a)
+      .post('/api/screenshots/upload-multiple')
+      .set('Authorization', me.auth)
+      .attach('screenshots', await pngBuffer(62), 'IMG_6002.png')
+      .attach('screenshots', await pngBuffer(63), 'IMG_6003.png');
+
+    expect(second.status).toBe(429);
+    expect(second.body.error).toMatch(/Daily extraction limit reached/);
+  }, 60_000);
+
+  it('does not charge quota for a request that never reached extraction', async () => {
+    const me = await actor();
+    jest.spyOn(supabaseService, 'uploadImage').mockResolvedValue('stored/path.png');
+    const a = app();
+
+    // The reachability probe fails before any inference runs, so the reservation this
+    // request took has to be handed back. Charging for it would let a GPU outage quietly
+    // eat a user's daily allowance.
+    mockedReachable.mockRejectedValueOnce(new ExtractionUnavailableError());
+    const down = await request(a)
+      .post('/api/screenshots/upload')
+      .set('Authorization', me.auth)
+      .attach('screenshot', await pngBuffer(88), 'IMG_8800.png');
+    expect(down.status).toBe(503);
+
+    // Both of the day's extractions must still be available.
+    for (const seed of [140, 199]) {
+      const res = await request(a)
+        .post('/api/screenshots/upload')
+        .set('Authorization', me.auth)
+        .attach('screenshot', await pngBuffer(seed), `IMG_8${seed}.png`);
+      expect(res.status).toBe(200);
+    }
   }, 60_000);
 
   it('tracks the quota per user, not globally', async () => {

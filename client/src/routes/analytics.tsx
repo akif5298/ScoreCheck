@@ -74,6 +74,9 @@ interface DashboardData {
 function Analytics() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  // See the same state in index.tsx: without it a failed request rendered empty charts, which
+  // is indistinguishable from a league that has no games.
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -81,7 +84,7 @@ function Analytics() {
       .then((res) => {
         if (res.success) setData(res.data);
       })
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
 
@@ -110,6 +113,10 @@ function Analytics() {
         <div className="flex h-48 items-center justify-center">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
         </div>
+      ) : error ? (
+        <Card>
+          <p className="text-sm text-destructive">{error}</p>
+        </Card>
       ) : (
         <>
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

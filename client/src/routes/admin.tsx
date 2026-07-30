@@ -94,6 +94,12 @@ function AdminDashboardView({ selfId }: { selfId: string }) {
     queryFn: () => api.get<ApiResponse<AdminUser[]>>("/api/admin/users").then((r) => r.data),
   });
 
+  // Read once, defensively. The render used `!dashboard || dashboard.recentGames.length === 0`,
+  // which guards a null dashboard but not a present-yet-partial one — a response missing
+  // recentGames threw on .length and took the whole page down. Every other field here is read
+  // with `?? 0`; this makes the list match.
+  const recentGames = dashboard?.recentGames ?? [];
+
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["admin"] });
   };
@@ -231,13 +237,13 @@ function AdminDashboardView({ selfId }: { selfId: string }) {
         <Card title="Recent games" hint="Latest uploads, any user">
           {dashboardLoading ? (
             <div className="text-sm text-muted-foreground">Loading…</div>
-          ) : !dashboard || dashboard.recentGames.length === 0 ? (
+          ) : recentGames.length === 0 ? (
             <div className="rounded-md border border-dashed border-border bg-background p-6 text-center text-sm text-muted-foreground">
               No games yet.
             </div>
           ) : (
             <ul className="space-y-3">
-              {dashboard.recentGames.map((g) => (
+              {recentGames.map((g) => (
                 <li key={g.id} className="rounded-md border border-border bg-background p-4">
                   <div className="flex items-center justify-between">
                     <span className="font-display text-sm font-semibold">

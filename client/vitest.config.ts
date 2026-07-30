@@ -36,6 +36,18 @@ export default defineConfig({
         "src/**/*.test.{ts,tsx}",
         "src/test/**",
       ],
+      // Lines and functions are pinned at exactly 100 because that is where the suite sits:
+      // a new component with an untested handler should fail the build rather than quietly
+      // dilute the average. Statements and branches sit just under their real values
+      // (99.5 / 95.32) — the shortfall is defensive `?? 0` fallbacks that only a malformed
+      // API response would reach, so demanding 100 there would mean writing tests for
+      // responses the server cannot send.
+      thresholds: {
+        statements: 99,
+        branches: 94,
+        functions: 100,
+        lines: 100,
+      },
     },
   },
 });

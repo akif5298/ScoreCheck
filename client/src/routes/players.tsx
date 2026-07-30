@@ -30,6 +30,9 @@ interface PlayerRow {
 function PlayersPage() {
   const [players, setPlayers] = useState<PlayerRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Kept distinct from "no players": a failed request used to be swallowed, so a broken
+  // analytics endpoint told the user to upload a box score instead of that anything was wrong.
+  const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<"ppg" | "rpg" | "apg" | "fgPct">("ppg");
 
   useEffect(() => {
@@ -65,7 +68,7 @@ function PlayersPage() {
           );
         }
       })
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
 
@@ -98,6 +101,10 @@ function PlayersPage() {
         <div className="flex h-48 items-center justify-center">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
         </div>
+      ) : error ? (
+        <Card>
+          <p className="text-sm text-destructive">{error}</p>
+        </Card>
       ) : sorted.length === 0 ? (
         <Card>
           <div className="py-10 text-center text-sm text-muted-foreground">

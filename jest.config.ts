@@ -40,6 +40,22 @@ const config: Config = {
     '!src/types/supabase.ts',
   ],
 
+  // Floors, not targets. Set a shade under what the suite actually reaches (96.8 statements /
+  // 91.09 branches / 96.36 functions / 97.44 lines) so ordinary refactoring has room to move
+  // while a whole file landing untested fails the build.
+  //
+  // Only enforced when coverage is collected, which is why CI runs `test:coverage` rather than
+  // plain `jest` — a bare `npm test` still passes on an uncovered file, by design, so the
+  // fast local loop stays fast.
+  coverageThreshold: {
+    global: {
+      statements: 96,
+      branches: 90,
+      functions: 96,
+      lines: 97,
+    },
+  },
+
   // pino's file-transport worker thread keeps Jest workers alive after tests complete
   forceExit: true,
 };

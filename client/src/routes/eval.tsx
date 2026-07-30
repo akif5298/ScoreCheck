@@ -82,13 +82,21 @@ function EvalPage() {
     <AppShell
       eyebrow="Benchmark"
       title="Eval harness"
-      description="Reproducible field-level accuracy on a labeled dataset. Run `npm run eval` locally to refresh."
-      actions={
-        <button className="inline-flex h-9 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90">
-          Run benchmark
-        </button>
-      }
+      description="Reproducible field-level accuracy on a labeled dataset. Run `npm run eval` locally for current numbers."
     >
+      {/* The figures on this page are checked-in constants, not a live read of anything. The
+          "Run benchmark" button that used to sit here had no handler, so the page read as a
+          working dashboard while showing results from a pipeline the app no longer uses. */}
+      <div className="mb-6 rounded-md border border-dashed border-border bg-background p-4 text-sm text-muted-foreground">
+        <span className="stamp">Illustrative sample</span>
+        <p className="mt-1.5">
+          These figures are a recorded sample from an earlier GCV / Qwen2.5-VL comparison and are
+          not live. The app now extracts with a fine-tuned model, so run{" "}
+          <code className="font-mono text-xs text-foreground">npm run eval</code> locally for
+          current accuracy.
+        </p>
+      </div>
+
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Metric
           label="Latest accuracy"

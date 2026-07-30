@@ -49,6 +49,9 @@ interface DashboardData {
 function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  // Kept distinct from "no games yet": without it a failed request rendered a healthy-looking
+  // dashboard reading all zeros, so a broken endpoint was indistinguishable from a new league.
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api
@@ -56,7 +59,7 @@ function Dashboard() {
       .then((res) => {
         if (res.success) setData(res.data);
       })
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
 
@@ -88,6 +91,10 @@ function Dashboard() {
         <div className="flex h-48 items-center justify-center">
           <span className="h-6 w-6 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
         </div>
+      ) : error ? (
+        <Card>
+          <p className="text-sm text-destructive">{error}</p>
+        </Card>
       ) : (
         <>
           <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -120,7 +127,10 @@ function Dashboard() {
               ) : (
                 <ul className="divide-y divide-border">
                   {data!.recentGames.slice(0, 5).map((g) => {
-                    const winner = g.homeScore > g.awayScore ? "home" : "away";
+                    // >= so a tie credits the home side, matching games.index.tsx and
+                    // games.$gameId.tsx. With > this page named the opposite winner from the
+                    // other two for the same game.
+                    const winner = g.homeScore >= g.awayScore ? "home" : "away";
                     return (
                       <li
                         key={g.id}
@@ -144,7 +154,9 @@ function Dashboard() {
                             />
                           </div>
                         </div>
-                        <Badge tone={g.homeScore > g.awayScore ? "success" : "outline"}>
+                        {/* Derived from `winner` rather than re-comparing, so the badge colour
+                            and the name inside it cannot disagree. */}
+                        <Badge tone={winner === "home" ? "success" : "outline"}>
                           {winner === "home" ? g.homeTeam : g.awayTeam} won
                         </Badge>
                       </li>
@@ -191,9 +203,11 @@ function Dashboard() {
           >
             <ol className="grid gap-px overflow-hidden rounded-md border border-border bg-border md:grid-cols-5">
               {[
+                // Kept in step with what the app actually runs: extraction is a fine-tuned
+                // vision model on a scale-to-zero GPU, not Google Cloud Vision.
                 { n: "01", t: "Screenshot", s: "JPEG / PNG · 4K ok" },
-                { n: "02", t: "Junk filter", s: "qwen2.5vl · ~1.5s" },
-                { n: "03", t: "GCV extract", s: "4-pass · 120 regions" },
+                { n: "02", t: "Junk filter", s: "Vision model · ~1.5s" },
+                { n: "03", t: "Fine-tuned extract", s: "Team-split · 2 passes" },
                 { n: "04", t: "Review & edit", s: "Confirm or correct" },
                 { n: "05", t: "Save", s: "PostgreSQL · Prisma" },
               ].map((step) => (

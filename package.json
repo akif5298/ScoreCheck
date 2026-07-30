@@ -30,6 +30,7 @@
     "finetune": "python scripts/finetune.py",
     "finetune:export": "python scripts/export_dataset.py && python scripts/finetune.py",
     "test": "jest",
+    "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix"
   },

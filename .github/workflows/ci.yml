@@ -66,14 +66,16 @@ jobs:
       - name: Typecheck
         run: npx tsc -p tsconfig.json --noEmit
 
+      # --coverage is what activates jest.config.ts's coverageThreshold; without it the gate
+      # is inert and coverage can drift down unnoticed.
       - name: Test
-        run: npm test -- --ci
+        run: npm run test:coverage -- --ci
 
       - name: Build
         run: npm run build:api
 
   client:
-    name: Client (lint, typecheck, build)
+    name: Client (lint, typecheck, test, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -95,6 +97,11 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit -p tsconfig.json
+
+      # Vitest, not Jest — the client is a Vite app and uses its own config
+      # (client/vitest.config.ts), which carries the coverage thresholds.
+      - name: Test
+        run: npm run test:coverage
 
       - name: Build
         run: npm run build

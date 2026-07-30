@@ -1,11 +1,12 @@
 import { Router, Request, Response } from 'express';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
 import { randomUUID } from 'node:crypto';
-import rateLimit from 'express-rate-limit';
 import { fromBuffer as fileTypeFromBuffer } from 'file-type';
-import supabaseService, { DuplicateGameError } from '@/services/supabase';
+import supabaseService from '@/services/supabase';
+import {
+  saveReviewedGame,
+  type IncomingPlayerData,
+  type ReviewedGameData,
+} from '@/services/gameSaveService';
 import { EnhancedOCRService } from '@/services/enhancedOCRService';
 import BoxScoreParser from '@/services/boxScoreParser';
 import { authenticateToken, requireUserId } from '@/middleware/auth';
@@ -20,156 +21,25 @@ import {
   DUPLICATE_HAMMING_THRESHOLD,
 } from '@/utils/imageHash';
 import { ValidationError, ExtractionUnavailableError } from '@/errors';
-import { TtlMap } from '@/utils/ttlMap';
+import { pendingHashes } from '@/services/pendingHashes';
+import { extractImageNumber } from '@/utils/imageNumber';
 import logger from '@/utils/logger';
 import {
   getMappingsForSquad,
   getAllowedNamesForSquad,
   getAllowedNamesArray,
 } from '@/services/mappingService';
+import { ALLOWED_IMAGE_MIME_TYPES } from '@/constants';
 import {
-  ALLOWED_IMAGE_MIME_TYPES,
-  MAX_FILE_SIZE_BYTES,
-  UPLOAD_RATE_LIMIT_WINDOW_MS,
-  UPLOAD_RATE_LIMIT_MAX,
-  EXTRACTION_DAILY_LIMIT,
-} from '@/constants';
+  upload,
+  uploadRateLimit,
+  warmupRateLimit,
+  extractionQuota,
+  extractionCost,
+  refundExtractions,
+} from '@/middleware/uploadQuota';
 
 const router = Router();
-
-// Bridges perceptual hashes from upload time to save time (single-instance only; lost on restart).
-//
-// Bounded and self-expiring: entries are removed on the terminal paths (a committed save,
-// or a duplicate), but an upload abandoned at the review step has no terminal path and used
-// to pin its entry for the lifetime of the process.
-//
-// Six hours is far longer than a review takes while still bounding growth; the cap is the
-// backstop if something goes wrong. Losing an entry is safe — the save path reads a miss as
-// "no hash known" and stores the game without one, which only costs future dedup on that
-// single screenshot.
-const PENDING_HASH_TTL_MS = 6 * 60 * 60 * 1000;
-const PENDING_HASH_MAX_ENTRIES = 5000;
-const pendingHashes = new TtlMap<string>(PENDING_HASH_TTL_MS, PENDING_HASH_MAX_ENTRIES);
-
-// Incoming player data shape from the review UI (all fields optional until validated)
-interface IncomingPlayerData {
-  id?: string;
-  name?: string;
-  team?: string;
-  teammateGrade?: string;
-  points?: number;
-  rebounds?: number;
-  assists?: number;
-  steals?: number;
-  blocks?: number;
-  turnovers?: number;
-  fouls?: number;
-  fgMade?: number;
-  fgAttempted?: number;
-  threeMade?: number;
-  threeAttempted?: number;
-  ftMade?: number;
-  ftAttempted?: number;
-}
-
-// Rate limiter applied only to upload endpoints (stricter than the global
-// limiter). Keyed by user id (these routes always run after authenticateToken)
-// so it's a true per-user limit, not per-IP behind Render's shared proxy.
-const uploadRateLimit = rateLimit({
-  windowMs: UPLOAD_RATE_LIMIT_WINDOW_MS,
-  max: UPLOAD_RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: Request) => req.user?.userId ?? 'anonymous',
-  message: { success: false, error: 'Too many uploads. Please wait a minute and try again.' },
-});
-
-// Lightweight limiter for the warmup poke. Generous — a warmup is cheap and
-// idempotent — but bounded so a client bug or bad actor can't hammer the GPU host.
-// Kept separate from uploadRateLimit so warming never eats into a user's actual
-// upload allowance.
-const warmupRateLimit = rateLimit({
-  windowMs: 60_000,
-  max: 6,
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req: Request) => req.user?.userId ?? 'anonymous',
-  // A throttled warmup is a no-op, not an error — the host is already warm (or
-  // warming) from the earlier poke. Answer 202 so the fire-and-forget client stays quiet.
-  handler: (_req: Request, res: Response) =>
-    res.status(202).json({ success: true, message: 'Already warming' } as ApiResponse),
-});
-
-// Per-user daily extraction quota. In-memory (single-instance only, like
-// pendingHashes above) — bounds inference cost/abuse; a Redis-backed version is
-// future work alongside an async extraction queue.
-const extractionCounts = new Map<string, { day: string; count: number }>();
-
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function extractionUsedToday(userId: string): number {
-  const entry = extractionCounts.get(userId);
-  return entry && entry.day === todayKey() ? entry.count : 0;
-}
-
-function recordExtractions(userId: string, n: number): void {
-  const day = todayKey();
-  const entry = extractionCounts.get(userId);
-  if (entry && entry.day === day) entry.count += n;
-  else extractionCounts.set(userId, { day, count: n });
-}
-
-// Hands back reservations that were never spent. Floors at zero so a refund can never
-// mint allowance, and ignores a stale day so a refund crossing midnight cannot decrement
-// the new day's count.
-function refundExtractions(userId: string, n: number): void {
-  if (n <= 0) return;
-  const entry = extractionCounts.get(userId);
-  if (entry && entry.day === todayKey()) {
-    entry.count = Math.max(0, entry.count - n);
-  }
-}
-
-// How many extractions this request is asking for. Used by both the gate and the
-// handler's reconciliation so the two can never disagree about what was reserved.
-function extractionCost(req: Request): number {
-  if (Array.isArray(req.files)) return req.files.length;
-  return req.file ? 1 : 0;
-}
-
-// Gate: reserves the whole request's cost before any inference runs.
-//
-// This used to check `used >= limit` and let the handlers record afterwards, which meant
-// the limit was only ever enforced against a count that predated the batch: a user at
-// 49/50 could send 10 files and land at 59. Reserving up front makes an over-limit batch
-// fail as a unit.
-//
-// Runs AFTER multer, unlike the check it replaces — the file count is the thing being
-// authorised, and req.files does not exist until multer has parsed the body. uploadRateLimit
-// still runs first, so the cheap abuse ceiling is unchanged.
-//
-// Whatever is reserved here and not spent is refunded by the handler; see extractionCost.
-function extractionQuota(req: Request, res: Response, next: () => void): void {
-  const userId = req.user?.userId;
-  if (!userId) return next();
-
-  const requested = extractionCost(req);
-  // No files: the handler owns that 400, and it costs no inference.
-  if (requested === 0) return next();
-
-  if (extractionUsedToday(userId) + requested > EXTRACTION_DAILY_LIMIT) {
-    res.status(429).json({
-      success: false,
-      error: `Daily extraction limit reached (${EXTRACTION_DAILY_LIMIT}/day). Try again tomorrow.`,
-    } as ApiResponse);
-    return;
-  }
-
-  recordExtractions(userId, requested);
-  next();
-}
 
 // The batch path signals a duplicate by tagging an Error with a code, because it has to
 // unwind out of a per-file promise rather than return a response directly.
@@ -190,48 +60,6 @@ async function validateMagicBytes(buffer: Buffer): Promise<void> {
     );
   }
 }
-
-// Helper function to extract image number from filename
-function extractImageNumber(filename?: string): string {
-  if (!filename) {
-    return Date.now().toString();
-  }
-
-  const patterns = [
-    /IMG_(\d+)\./i,
-    /(\d+)-boxscore\./i,
-    /(\d+)\./i,
-    /(\d+)/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = filename.match(pattern);
-    if (match && match[1]) {
-      return match[1];
-    }
-  }
-
-  return Date.now().toString();
-}
-
-// Configure multer for memory storage (we'll upload directly to Supabase)
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: {
-    fileSize: MAX_FILE_SIZE_BYTES,
-  },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
-
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  },
-});
 
 
 // Upload and process multiple box score screenshots for review
@@ -557,16 +385,12 @@ router.post('/upload', authenticateToken, resolveSquad, uploadRateLimit, upload.
 });
 
 // Save the reviewed data to the database
+// Persist a reviewed box score. The pipeline itself lives in services/gameSaveService.ts;
+// this handler validates the request and maps an outcome to a status code.
 router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
     const { gameData, playersData, imageUrl, originalFileName } = req.body as {
-      gameData: {
-        date?: string;
-        homeTeam: string;
-        awayTeam: string;
-        homeScore: number;
-        awayScore: number;
-      };
+      gameData: ReviewedGameData;
       playersData: IncomingPlayerData[];
       imageUrl: string;
       originalFileName?: string;
@@ -580,299 +404,33 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
       return res.status(400).json(response);
     }
 
-    // Check if a game with this image URL already exists to prevent duplicates
-    const existingGame = await supabaseService.getGameByScreenshotUrl(imageUrl, requireSquadId(req));
-    if (existingGame) {
-      logger.info({ gameId: existingGame.id }, 'Duplicate save request — returning existing game');
-      // Return this game's own players. (json_agg yields [null] for a game with no player
-      // rows, so strip nulls rather than surfacing them to the client.)
-      const existingFull = await supabaseService.getGameById(existingGame.id, requireSquadId(req));
-      const existingPlayers = ((existingFull?.players ?? []) as (Player | null)[]).filter(
-        (p): p is Player => p != null,
-      );
-      const response: ApiResponse<{ game: Game; players: Player[] }> = {
-        success: true,
-        data: {
-          game: existingGame,
-          players: existingPlayers,
-        },
-        message: 'Game already exists in database',
-      };
-      return res.status(200).json(response);
-    }
-
-    // Pre-generate a stable ID so players and teams can reference the game
-    // before the transaction commits, then save everything atomically.
-    // UUID rather than Date.now(): two saves in the same millisecond collided, which
-    // becomes far more likely once several people upload into a shared squad.
-    const gameId = `game_${randomUUID()}`;
-
-    // Extract image number from the original filename for gameIdFromFile
-    const playerImageNumber = extractImageNumber(originalFileName);
-
-    const getPositionFromPlayerNumber = (playerNum: string): string => {
-      const num = parseInt(playerNum);
-      if (num === 0 || num === 5) return 'PG';
-      if (num === 1 || num === 6) return 'SG';
-      if (num === 2 || num === 7) return 'SF';
-      if (num === 3 || num === 8) return 'PF';
-      if (num === 4 || num === 9) return 'C';
-      return 'Unknown';
-    };
-
-    // Pre-compute all player write inputs (no DB calls yet)
-    const playerInputs = playersData.map((playerData: IncomingPlayerData, index: number) => {
-      const playerNumMatch = playerData.id?.match(/_(\d+)_/);
-      const playerNumber = playerNumMatch?.[1] ?? (index + 1).toString();
-      const playerId = `${playerImageNumber}_P${playerNumber}`;
-      const position = getPositionFromPlayerNumber(playerNumber);
-      const fgMade = Number(playerData.fgMade) || 0;
-      const fgAttempted = Number(playerData.fgAttempted) || 0;
-      const threeMade = Number(playerData.threeMade) || 0;
-      const threeAttempted = Number(playerData.threeAttempted) || 0;
-      const ftMade = Number(playerData.ftMade) || 0;
-      const ftAttempted = Number(playerData.ftAttempted) || 0;
-      return {
-        id: playerData.id || `player_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        name: playerData.name || 'Unknown Player',
-        team: playerData.team || 'Unknown Team',
-        teammateGrade: playerData.teammateGrade || 'N/A',
-        gameIdFromFile: playerImageNumber,
-        playerId,
-        position,
-        points: playerData.points || 0,
-        rebounds: playerData.rebounds || 0,
-        assists: playerData.assists || 0,
-        steals: playerData.steals || 0,
-        blocks: playerData.blocks || 0,
-        turnovers: playerData.turnovers || 0,
-        fouls: playerData.fouls || 0,
-        fgMade,
-        fgAttempted,
-        threeMade,
-        threeAttempted,
-        ftMade,
-        ftAttempted,
-        fg_percentage: fgAttempted > 0
-          ? Math.round((fgMade / fgAttempted) * 100 * 100) / 100
-          : 0.00,
-        three_percentage: threeAttempted > 0
-          ? Math.round((threeMade / threeAttempted) * 100 * 100) / 100
-          : 0.00,
-        ft_percentage: ftAttempted > 0
-          ? Math.round((ftMade / ftAttempted) * 100 * 100) / 100
-          : 0.00,
-        gameId,
-        squadId: requireSquadId(req),
-      };
+    const result = await saveReviewedGame({
+      squadId: requireSquadId(req),
+      userId: requireUserId(req),
+      gameData,
+      playersData,
+      imageUrl,
+      originalFileName,
     });
-
-    // Pre-compute team totals from player data
-    const homeTeamPlayers = playersData.filter((p) => p.team === gameData.homeTeam);
-    const awayTeamPlayers = playersData.filter((p) => p.team === gameData.awayTeam);
-
-    const homeTeamTotals = {
-      rebounds: homeTeamPlayers.reduce((sum, p) => sum + (p.rebounds || 0), 0),
-      assists: homeTeamPlayers.reduce((sum, p) => sum + (p.assists || 0), 0),
-      steals: homeTeamPlayers.reduce((sum, p) => sum + (p.steals || 0), 0),
-      blocks: homeTeamPlayers.reduce((sum, p) => sum + (p.blocks || 0), 0),
-      turnovers: homeTeamPlayers.reduce((sum, p) => sum + (p.turnovers || 0), 0),
-      fouls: homeTeamPlayers.reduce((sum, p) => sum + (p.fouls || 0), 0),
-      fgMade: homeTeamPlayers.reduce((sum, p) => sum + (p.fgMade || 0), 0),
-      fgAttempted: homeTeamPlayers.reduce((sum, p) => sum + (p.fgAttempted || 0), 0),
-      threeMade: homeTeamPlayers.reduce((sum, p) => sum + (p.threeMade || 0), 0),
-      threeAttempted: homeTeamPlayers.reduce((sum, p) => sum + (p.threeAttempted || 0), 0),
-      ftMade: homeTeamPlayers.reduce((sum, p) => sum + (p.ftMade || 0), 0),
-      ftAttempted: homeTeamPlayers.reduce((sum, p) => sum + (p.ftAttempted || 0), 0),
-    };
-
-    const awayTeamTotals = {
-      rebounds: awayTeamPlayers.reduce((sum, p) => sum + (p.rebounds || 0), 0),
-      assists: awayTeamPlayers.reduce((sum, p) => sum + (p.assists || 0), 0),
-      steals: awayTeamPlayers.reduce((sum, p) => sum + (p.steals || 0), 0),
-      blocks: awayTeamPlayers.reduce((sum, p) => sum + (p.blocks || 0), 0),
-      turnovers: awayTeamPlayers.reduce((sum, p) => sum + (p.turnovers || 0), 0),
-      fouls: awayTeamPlayers.reduce((sum, p) => sum + (p.fouls || 0), 0),
-      fgMade: awayTeamPlayers.reduce((sum, p) => sum + (p.fgMade || 0), 0),
-      fgAttempted: awayTeamPlayers.reduce((sum, p) => sum + (p.fgAttempted || 0), 0),
-      threeMade: awayTeamPlayers.reduce((sum, p) => sum + (p.threeMade || 0), 0),
-      threeAttempted: awayTeamPlayers.reduce((sum, p) => sum + (p.threeAttempted || 0), 0),
-      ftMade: awayTeamPlayers.reduce((sum, p) => sum + (p.ftMade || 0), 0),
-      ftAttempted: awayTeamPlayers.reduce((sum, p) => sum + (p.ftAttempted || 0), 0),
-    };
-
-    const imageNumber = playerImageNumber;
-
-    const homeTeamInput = {
-      id: `team_${imageNumber}_home_${Math.random().toString(36).substr(2, 5)}`,
-      name: gameData.homeTeam,
-      isHome: true,
-      points: gameData.homeScore,
-      rebounds: homeTeamTotals.rebounds,
-      assists: homeTeamTotals.assists,
-      steals: homeTeamTotals.steals,
-      blocks: homeTeamTotals.blocks,
-      turnovers: homeTeamTotals.turnovers,
-      fouls: homeTeamTotals.fouls,
-      fgMade: homeTeamTotals.fgMade,
-      fgAttempted: homeTeamTotals.fgAttempted,
-      threeMade: homeTeamTotals.threeMade,
-      threeAttempted: homeTeamTotals.threeAttempted,
-      ftMade: homeTeamTotals.ftMade,
-      ftAttempted: homeTeamTotals.ftAttempted,
-      fg_percentage: homeTeamTotals.fgAttempted > 0
-        ? Math.round((homeTeamTotals.fgMade / homeTeamTotals.fgAttempted) * 100 * 100) / 100
-        : 0.00,
-      three_percentage: homeTeamTotals.threeAttempted > 0
-        ? Math.round((homeTeamTotals.threeMade / homeTeamTotals.threeAttempted) * 100 * 100) / 100
-        : 0.00,
-      ft_percentage: homeTeamTotals.ftAttempted > 0
-        ? Math.round((homeTeamTotals.ftMade / homeTeamTotals.ftAttempted) * 100 * 100) / 100
-        : 0.00,
-      gameId,
-      squadId: requireSquadId(req),
-    };
-
-    const awayTeamInput = {
-      id: `team_${imageNumber}_away_${Math.random().toString(36).substr(2, 5)}`,
-      name: gameData.awayTeam,
-      isHome: false,
-      points: gameData.awayScore,
-      rebounds: awayTeamTotals.rebounds,
-      assists: awayTeamTotals.assists,
-      steals: awayTeamTotals.steals,
-      blocks: awayTeamTotals.blocks,
-      turnovers: awayTeamTotals.turnovers,
-      fouls: awayTeamTotals.fouls,
-      fgMade: awayTeamTotals.fgMade,
-      fgAttempted: awayTeamTotals.fgAttempted,
-      threeMade: awayTeamTotals.threeMade,
-      threeAttempted: awayTeamTotals.threeAttempted,
-      ftMade: awayTeamTotals.ftMade,
-      ftAttempted: awayTeamTotals.ftAttempted,
-      fg_percentage: awayTeamTotals.fgAttempted > 0
-        ? Math.round((awayTeamTotals.fgMade / awayTeamTotals.fgAttempted) * 100 * 100) / 100
-        : 0.00,
-      three_percentage: awayTeamTotals.threeAttempted > 0
-        ? Math.round((awayTeamTotals.threeMade / awayTeamTotals.threeAttempted) * 100 * 100) / 100
-        : 0.00,
-      ft_percentage: awayTeamTotals.ftAttempted > 0
-        ? Math.round((awayTeamTotals.ftMade / awayTeamTotals.ftAttempted) * 100 * 100) / 100
-        : 0.00,
-      gameId,
-      squadId: requireSquadId(req),
-    };
-
-    // Retrieve the perceptual hash stored at upload time (null if upload route not used).
-    // Deliberately NOT removed from the map yet — if the save below throws, the entry must
-    // survive so a retry still persists the hash. Deleting it up front left any retried game
-    // with a null imageHash, i.e. permanently invisible to duplicate detection.
-    const savedImageHash = pendingHashes.get(imageUrl) ?? null;
-
-    // Atomic save: game + players + teams in a single transaction on a dedicated
-    // pooled client, which also
-    // re-checks for a perceptual duplicate under an advisory lock (see
-    // SupabaseService.assertNotDuplicateInSquad).
-    let saveResult: { game: any; players: Player[] };
-    try {
-      saveResult = await supabaseService.saveGameWithStats(
-        {
-          id: gameId,
-          date: gameData.date || new Date().toISOString(),
-          homeTeam: gameData.homeTeam,
-          awayTeam: gameData.awayTeam,
-          homeScore: gameData.homeScore,
-          awayScore: gameData.awayScore,
-          screenshotUrl: imageUrl,
-          imageHash: savedImageHash,
-          processed: true,
-          squadId: requireSquadId(req),
-          // Attribution + delete/move rights. Distinct from squadId, which controls access.
-          uploadedByUserId: requireUserId(req),
-        },
-        playerInputs,
-        homeTeamInput,
-        awayTeamInput,
-      );
-    } catch (saveError) {
-      if (!(saveError instanceof DuplicateGameError)) throw saveError;
-
-      // Lost the save-time dedup race: another member committed the same screenshot while
-      // this one sat in review. Not a failure — the game the user was saving is in the
-      // squad, so respond as the imageUrl-duplicate path above does. A 500 here would
-      // tell the user their game was lost when it demonstrably was not.
-      logger.info(
-        { gameId: saveError.existingGameId, squadId: requireSquadId(req) },
-        'Concurrent save of the same screenshot — returning the game that won the race',
-      );
-
-      // Terminal outcome, so the upload→save bridge for this image is done with. Leaving
-      // it would pin the entry in the map for the process's lifetime.
-      pendingHashes.delete(imageUrl);
-
-      const squadId = requireSquadId(req);
-      const winner = await supabaseService.getGameById(saveError.existingGameId, squadId);
-      if (!winner) {
-        // The winning game vanished between the aborted save and this read — only possible
-        // if it was deleted in that window. Reporting a duplicate would point the client at
-        // a game that no longer exists, so surface it as the failure it is and let the user
-        // retry, which will now succeed.
-        throw saveError;
-      }
-      // Drop the aggregate fields so the shape matches the other duplicate path, and strip
-      // json_agg's [null] for a game with no player rows.
-      const { players: winnerPlayers, teams: _teams, ...winnerGame } = winner as any;
-      const response: ApiResponse<{ game: Game; players: Player[] }> = {
-        success: true,
-        data: {
-          game: winnerGame as Game,
-          players: ((winnerPlayers ?? []) as (Player | null)[]).filter(
-            (p): p is Player => p != null,
-          ),
-        },
-        message: 'Game already exists in database',
-      };
-      res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json(response);
-    }
-    const { game, players: savedPlayers } = saveResult;
-
-    // Save committed — the upload→save hash bridge for this image is now consumed.
-    pendingHashes.delete(imageUrl);
-
-    // Rebuild aggregates for this squad from the rows just written. Replaces the previous
-    // per-player incremental accumulation, which had no decrement path and let totals
-    // drift away from the underlying games.
-    //
-    // The game itself is already committed at this point, so a failure here must not be
-    // reported as a failed save. It is logged loudly rather than swallowed, and because
-    // the rebuild is idempotent and derived entirely from `players`, the next save or edit
-    // in this squad repairs it — unlike the old incremental path, where a lost update was
-    // permanent.
-    try {
-      await supabaseService.recomputeSquadAggregates(requireSquadId(req));
-    } catch (aggregateErr) {
-      logger.error(
-        { err: aggregateErr, gameId: game.id, squadId: requireSquadId(req) },
-        'Game saved but squad aggregate rebuild failed — totals are stale until the next write',
-      );
-    }
 
     const response: ApiResponse<{ game: Game; players: Player[] }> = {
       success: true,
-      data: {
-        game,
-        // The rows just written by saveGameWithStats — previously this returned the user's
-        // whole game list under a field typed Player[].
-        players: savedPlayers,
-      },
-      message: 'Box score saved successfully',
+      data: { game: result.game, players: result.players },
+      message:
+        result.outcome === 'created'
+          ? 'Box score saved successfully'
+          : 'Game already exists in database',
     };
 
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-    res.setHeader('Surrogate-Control', 'no-store');
+    // No cache headers set here on purpose. server/index.ts installs a global middleware
+    // that applies the full no-store/no-cache/must-revalidate/proxy-revalidate set to every
+    // response before any route runs, and every other route in the app relies on it.
+    //
+    // The three outcomes used to disagree: a fresh save re-set those four headers verbatim
+    // (redundant), a lost dedup race replaced Cache-Control with a bare 'no-store' (shorter
+    // than the global it overwrote), and the screenshotUrl match set nothing (correct).
+    // Deleting all three makes the responses identical and leaves the caching policy in the
+    // one place that owns it.
     return res.status(200).json(response);
   } catch (error) {
     logger.error({ err: error }, 'Error saving box score');

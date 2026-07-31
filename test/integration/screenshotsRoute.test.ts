@@ -204,10 +204,70 @@ describe('GET /games', () => {
     expect(res.body.data).toEqual([]);
   });
 
+  it('reports page metadata alongside the rows', async () => {
+    const me = await actor();
+    for (let i = 0; i < 3; i++) await seedGame(me.squad.id, me.user.id);
+
+    const res = await request(app()).get('/api/screenshots/games').set('Authorization', me.auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(3);
+    expect(res.body.meta).toEqual({ page: 1, pageSize: 25, total: 3, totalPages: 1 });
+  });
+
+  it('pages through the full set without repeating or dropping a game', async () => {
+    // The property that makes pagination correct rather than merely present. The
+    // unpaginated query has no ORDER BY at all, and these seeded games share one date, so
+    // without the id tiebreak in the paged query a row could surface on two pages or on
+    // neither.
+    const me = await actor();
+    const seeded: string[] = [];
+    for (let i = 0; i < 5; i++) seeded.push(await seedGame(me.squad.id, me.user.id));
+
+    const seen: string[] = [];
+    for (const page of [1, 2, 3]) {
+      const res = await request(app())
+        .get(`/api/screenshots/games?page=${page}&pageSize=2`)
+        .set('Authorization', me.auth);
+      expect(res.status).toBe(200);
+      expect(res.body.meta).toMatchObject({ page, pageSize: 2, total: 5, totalPages: 3 });
+      seen.push(...res.body.data.map((g: { id: string }) => g.id));
+    }
+
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen).size).toBe(5);
+    expect([...seen].sort()).toEqual([...seeded].sort());
+  });
+
+  it('clamps an oversized pageSize so the unbounded query cannot be re-requested', async () => {
+    const me = await actor();
+    await seedGame(me.squad.id, me.user.id);
+
+    const res = await request(app())
+      .get('/api/screenshots/games?pageSize=1000000')
+      .set('Authorization', me.auth);
+
+    expect(res.body.meta.pageSize).toBe(100);
+  });
+
+  it('falls back to sane defaults on nonsense parameters rather than erroring', async () => {
+    const me = await actor();
+    await seedGame(me.squad.id, me.user.id);
+
+    const res = await request(app())
+      .get('/api/screenshots/games?page=-4&pageSize=abc')
+      .set('Authorization', me.auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.meta).toMatchObject({ page: 1, pageSize: 25 });
+  });
+
   it('500s when the read fails', async () => {
     const me = await actor();
+    // Spies the method the paginated route actually calls now — getGamesBySquadId is no
+    // longer on this path, though analytics still depends on it.
     jest
-      .spyOn(supabaseService, 'getGamesBySquadId')
+      .spyOn(supabaseService, 'getGamesPageBySquadId')
       .mockRejectedValue(new Error('db down') as never);
 
     const res = await request(app()).get('/api/screenshots/games').set('Authorization', me.auth);
@@ -776,6 +836,60 @@ describe('POST /save — the real write path', () => {
     expect(res.body.error).toBe('Missing required data for saving');
   });
 
+  it('410s when the upload behind the save has timed out', async () => {
+    const me = await actor();
+    const { pendingHashes } = await import('@/services/pendingHashes');
+    const imageUrl = 'stored/expired-shot.png';
+
+    // Stand in for an upload half an hour ago. Reaching into the bridge directly rather
+    // than driving /upload and waiting: the point under test is what /save does once the
+    // entry has lapsed, and TtlMap's own expiry is unit-tested separately.
+    pendingHashes.set(imageUrl, 'a'.repeat(60));
+    const realNow = Date.now;
+    Date.now = () => realNow() + 31 * 60 * 1000;
+    try {
+      const res = await request(app())
+        .post('/api/screenshots/save')
+        .set('Authorization', me.auth)
+        .send({ gameData, playersData: tenPlayers(), imageUrl, originalFileName: 'IMG_9001.png' });
+
+      expect(res.status).toBe(410);
+      expect(res.body.code).toBe('UPLOAD_EXPIRED');
+      expect(res.body.error).toMatch(/upload the screenshot again/i);
+    } finally {
+      Date.now = realNow;
+      pendingHashes.delete(imageUrl);
+    }
+
+    // Nothing was written — the user has to re-upload, not end up with a half-saved game.
+    const { rows } = await pgPool.query('SELECT id FROM games WHERE "squadId" = $1', [me.squad.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('still saves when the bridge never knew the screenshot at all', async () => {
+    // A save whose upload predates a restart, or that never went through /upload, cannot be
+    // attributed to a timeout — it must keep working, storing a null imageHash as before.
+    const me = await actor();
+
+    const res = await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({
+        gameData,
+        playersData: tenPlayers(),
+        imageUrl: 'stored/never-seen.png',
+        originalFileName: 'IMG_9002.png',
+      });
+
+    expect(res.status).toBe(200);
+    const { rows } = await pgPool.query<{ imageHash: string | null }>(
+      'SELECT "imageHash" FROM games WHERE "squadId" = $1',
+      [me.squad.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.imageHash).toBeNull();
+  });
+
   it('persists the game, its players and both team rows', async () => {
     const me = await actor();
 
@@ -836,60 +950,6 @@ describe('POST /save — the real write path', () => {
   it('falls back to the array index when the id carries no slot', async () => {
     const me = await actor();
     // tenPlayers() uses bare ids ("0".."9"), which the /_(\d+)_/ pattern does not match.
-  it('410s when the upload behind the save has timed out', async () => {
-    const me = await actor();
-    const { pendingHashes } = await import('@/services/pendingHashes');
-    const imageUrl = 'stored/expired-shot.png';
-
-    // Stand in for an upload half an hour ago. Reaching into the bridge directly rather
-    // than driving /upload and waiting: the point under test is what /save does once the
-    // entry has lapsed, and TtlMap's own expiry is unit-tested separately.
-    pendingHashes.set(imageUrl, 'a'.repeat(60));
-    const realNow = Date.now;
-    Date.now = () => realNow() + 31 * 60 * 1000;
-    try {
-      const res = await request(app())
-        .post('/api/screenshots/save')
-        .set('Authorization', me.auth)
-        .send({ gameData, playersData: tenPlayers(), imageUrl, originalFileName: 'IMG_9001.png' });
-
-      expect(res.status).toBe(410);
-      expect(res.body.code).toBe('UPLOAD_EXPIRED');
-      expect(res.body.error).toMatch(/upload the screenshot again/i);
-    } finally {
-      Date.now = realNow;
-      pendingHashes.delete(imageUrl);
-    }
-
-    // Nothing was written — the user has to re-upload, not end up with a half-saved game.
-    const { rows } = await pgPool.query('SELECT id FROM games WHERE "squadId" = $1', [me.squad.id]);
-    expect(rows).toHaveLength(0);
-  });
-
-  it('still saves when the bridge never knew the screenshot at all', async () => {
-    // A save whose upload predates a restart, or that never went through /upload, cannot be
-    // attributed to a timeout — it must keep working, storing a null imageHash as before.
-    const me = await actor();
-
-    const res = await request(app())
-      .post('/api/screenshots/save')
-      .set('Authorization', me.auth)
-      .send({
-        gameData,
-        playersData: tenPlayers(),
-        imageUrl: 'stored/never-seen.png',
-        originalFileName: 'IMG_9002.png',
-      });
-
-    expect(res.status).toBe(200);
-    const { rows } = await pgPool.query<{ imageHash: string | null }>(
-      'SELECT "imageHash" FROM games WHERE "squadId" = $1',
-      [me.squad.id],
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.imageHash).toBeNull();
-  });
-
     await request(app())
       .post('/api/screenshots/save')
       .set('Authorization', me.auth)
@@ -1031,5 +1091,81 @@ describe('unexpected failures', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Missing required fields/);
+  });
+});
+
+describe('request body limits', () => {
+  const gameData = {
+    homeTeam: 'Team A',
+    awayTeam: 'Team B',
+    homeScore: 100,
+    awayScore: 90,
+  };
+
+  it('refuses a save carrying more player rows than a box score can hold', async () => {
+    // Every element becomes an INSERT in one transaction, so an unbounded array is a
+    // write-amplification lever, not just bad data.
+    const me = await actor();
+
+    const res = await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({
+        gameData,
+        playersData: new Array(31).fill({ name: 'Akif', team: 'Team A' }),
+        imageUrl: 'stored/too-many.png',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/more than 30 players/i);
+
+    const { rows } = await pgPool.query('SELECT id FROM games WHERE "squadId" = $1', [me.squad.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('refuses an oversized team name', async () => {
+    const me = await actor();
+
+    const res = await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({
+        gameData: { ...gameData, homeTeam: 'A'.repeat(301) },
+        playersData: [],
+        imageUrl: 'stored/long-name.png',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/homeTeam/);
+  });
+
+  it('refuses a score that is not a number', async () => {
+    const me = await actor();
+
+    const res = await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({
+        gameData: { ...gameData, homeScore: 'lots' },
+        playersData: [],
+        imageUrl: 'stored/bad-score.png',
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/homeScore/);
+  });
+
+  it('refuses an edit whose players field is truthy but not an array', async () => {
+    // The presence check passes a non-empty string; only the schema catches the type.
+    const me = await actor();
+    const gameId = await seedGame(me.squad.id, me.user.id);
+
+    const res = await request(app())
+      .put(`/api/screenshots/games/${gameId}`)
+      .set('Authorization', me.auth)
+      .send({ ...gameData, date: '2026-07-18', players: 'not-an-array' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/players/);
   });
 });

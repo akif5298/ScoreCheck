@@ -1,6 +1,19 @@
 process.env.JWT_SECRET = 'test-secret-key-for-jwt-signing-0123456789';
 process.env.INVITE_CODE = 'test-invite-code';
 process.env.AUTH_RATE_LIMIT_MAX = '1000';
+// Same reason as above: this file exercises change-password behaviour, not its throttle.
+// The limiter itself is covered by auth.rateLimit.test.ts, which sets a low ceiling.
+process.env.PASSWORD_CHANGE_RATE_LIMIT_MAX = '1000';
+
+// Signup and change-password now consult the breach policy, which reaches out to HIBP.
+// Stubbed here so these tests stay hermetic and offline — the policy's own behaviour,
+// including its fail-open path, is covered by services/__tests__/passwordPolicy.test.ts.
+jest.mock('@/services/passwordPolicy', () => ({
+  __esModule: true,
+  assessPassword: jest.fn().mockResolvedValue({ ok: true }),
+  breachCount: jest.fn(),
+  findObviousWeakness: jest.fn(),
+}));
 
 jest.mock('@/services/supabase', () => ({
   __esModule: true,

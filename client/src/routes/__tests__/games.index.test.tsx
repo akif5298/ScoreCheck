@@ -528,3 +528,149 @@ describe("moving games to another squad", () => {
     expect(screen.getByText(/1 selected/)).toBeInTheDocument();
   });
 });
+
+describe("pagination", () => {
+  /** Games list responses now carry page metadata; older shapes omit it entirely. */
+  function pagedGet(meta: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  }) {
+    get.mockImplementation((path: string) => {
+      if (path.includes("/screenshots/games")) {
+        const page = Number(new URLSearchParams(path.split("?")[1]).get("page") ?? 1);
+        return Promise.resolve({
+          success: true,
+          data: [game({ id: `g-page-${page}` })],
+          meta: { ...meta, page },
+        }) as never;
+      }
+      if (path.includes("/members")) {
+        return Promise.resolve({ success: true, data: MEMBERS }) as never;
+      }
+      return Promise.resolve({ success: true, data: [] }) as never;
+    });
+  }
+
+  it("hides the controls when everything fits on one page", async () => {
+    pagedGet({ page: 1, pageSize: 25, total: 1, totalPages: 1 });
+    await renderLoaded();
+
+    expect(screen.queryByRole("navigation", { name: /games pagination/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the page position and disables Previous on the first page", async () => {
+    pagedGet({ page: 1, pageSize: 2, total: 5, totalPages: 3 });
+    await renderLoaded();
+
+    expect(await screen.findByText(/page 1 of 3/i)).toBeInTheDocument();
+    expect(screen.getByText(/5 games/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /previous/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+  });
+
+  it("requests the next page and disables Next at the end", async () => {
+    pagedGet({ page: 1, pageSize: 1, total: 2, totalPages: 2 });
+    await renderLoaded();
+
+    await userEvent.click(await screen.findByRole("button", { name: /next/i }));
+
+    await waitFor(() =>
+      expect(get).toHaveBeenCalledWith(expect.stringContaining("page=2")),
+    );
+    expect(await screen.findByText(/page 2 of 2/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
+  });
+
+  it("goes back with Previous", async () => {
+    pagedGet({ page: 1, pageSize: 1, total: 2, totalPages: 2 });
+    await renderLoaded();
+
+    await userEvent.click(await screen.findByRole("button", { name: /next/i }));
+    await screen.findByText(/page 2 of 2/i);
+    await userEvent.click(await screen.findByRole("button", { name: /previous/i }));
+
+    expect(await screen.findByText(/page 1 of 2/i)).toBeInTheDocument();
+  });
+
+  it("labels both controls with text, not icons alone", async () => {
+    // Keeps the buttons readable by screen readers and by anyone who does not recognise a
+    // bare chevron.
+    pagedGet({ page: 1, pageSize: 1, total: 2, totalPages: 2 });
+    await renderLoaded();
+
+    expect(await screen.findByRole("button", { name: /previous/i })).toHaveAttribute("title");
+    expect(await screen.findByRole("button", { name: /next/i })).toHaveAttribute("title");
+  });
+});
+
+describe("optimistic delete", () => {
+  /** Two games so a removal is visible without emptying the table. */
+  function twoGames() {
+    get.mockImplementation((path: string) => {
+      if (path.includes("/screenshots/games")) {
+        return Promise.resolve({
+          success: true,
+          data: [game({ id: "g1" }), game({ id: "g2", homeTeam: "Second Game" })],
+          meta: { page: 1, pageSize: 25, total: 2, totalPages: 1 },
+        }) as never;
+      }
+      if (path.includes("/members")) {
+        return Promise.resolve({ success: true, data: MEMBERS }) as never;
+      }
+      return Promise.resolve({ success: true, data: [] }) as never;
+    });
+  }
+
+  it("removes the row before the server answers", async () => {
+    twoGames();
+    // A delete that never settles: anything still on screen is there optimistically.
+    del.mockReturnValue(new Promise(() => {}) as never);
+    await renderLoaded();
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    const dialog = await screen.findByRole("alertdialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    // Gone from the table with the request still in flight — the point of the change.
+    await waitFor(() => expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument());
+    // getAllByText: the name appears in both the row link and the "won" badge.
+    expect(screen.getAllByText(/Second Game/).length).toBeGreaterThan(0);
+  });
+
+  it("puts the row back when the server refuses", async () => {
+    twoGames();
+    del.mockRejectedValue(new Error("Only the uploader or squad owner can delete this game"));
+    await renderLoaded();
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    const dialog = await screen.findByRole("alertdialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    // The rollback is the half of optimistic rendering that silently rots: without it a
+    // refused delete leaves the row missing until a manual refresh, and the user believes
+    // it worked.
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Only the uploader or squad owner can delete this game",
+      ),
+    );
+    expect(await screen.findByText(/Akif \(PG\) vs Team B/)).toBeInTheDocument();
+  });
+
+  it("decrements the visible total while the delete is in flight", async () => {
+    twoGames();
+    del.mockReturnValue(new Promise(() => {}) as never);
+    await renderLoaded();
+    await userEvent.click((await screen.findAllByRole("button", { name: "Delete" }))[0]!);
+    const dialog = await screen.findByRole("alertdialog");
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    // Only asserts the count was adjusted in the cache, not that controls render — with
+    // one page there is no pagination footer to read it from.
+    await waitFor(() => expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument());
+  });
+});

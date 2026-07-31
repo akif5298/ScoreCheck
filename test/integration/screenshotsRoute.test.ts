@@ -836,6 +836,60 @@ describe('POST /save — the real write path', () => {
   it('falls back to the array index when the id carries no slot', async () => {
     const me = await actor();
     // tenPlayers() uses bare ids ("0".."9"), which the /_(\d+)_/ pattern does not match.
+  it('410s when the upload behind the save has timed out', async () => {
+    const me = await actor();
+    const { pendingHashes } = await import('@/services/pendingHashes');
+    const imageUrl = 'stored/expired-shot.png';
+
+    // Stand in for an upload half an hour ago. Reaching into the bridge directly rather
+    // than driving /upload and waiting: the point under test is what /save does once the
+    // entry has lapsed, and TtlMap's own expiry is unit-tested separately.
+    pendingHashes.set(imageUrl, 'a'.repeat(60));
+    const realNow = Date.now;
+    Date.now = () => realNow() + 31 * 60 * 1000;
+    try {
+      const res = await request(app())
+        .post('/api/screenshots/save')
+        .set('Authorization', me.auth)
+        .send({ gameData, playersData: tenPlayers(), imageUrl, originalFileName: 'IMG_9001.png' });
+
+      expect(res.status).toBe(410);
+      expect(res.body.code).toBe('UPLOAD_EXPIRED');
+      expect(res.body.error).toMatch(/upload the screenshot again/i);
+    } finally {
+      Date.now = realNow;
+      pendingHashes.delete(imageUrl);
+    }
+
+    // Nothing was written — the user has to re-upload, not end up with a half-saved game.
+    const { rows } = await pgPool.query('SELECT id FROM games WHERE "squadId" = $1', [me.squad.id]);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('still saves when the bridge never knew the screenshot at all', async () => {
+    // A save whose upload predates a restart, or that never went through /upload, cannot be
+    // attributed to a timeout — it must keep working, storing a null imageHash as before.
+    const me = await actor();
+
+    const res = await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({
+        gameData,
+        playersData: tenPlayers(),
+        imageUrl: 'stored/never-seen.png',
+        originalFileName: 'IMG_9002.png',
+      });
+
+    expect(res.status).toBe(200);
+    const { rows } = await pgPool.query<{ imageHash: string | null }>(
+      'SELECT "imageHash" FROM games WHERE "squadId" = $1',
+      [me.squad.id],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.imageHash).toBeNull();
+  });
+
     await request(app())
       .post('/api/screenshots/save')
       .set('Authorization', me.auth)

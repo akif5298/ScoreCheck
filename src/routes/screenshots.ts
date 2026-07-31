@@ -20,7 +20,7 @@ import {
   hammingDistance,
   DUPLICATE_HAMMING_THRESHOLD,
 } from '@/utils/imageHash';
-import { ValidationError, ExtractionUnavailableError } from '@/errors';
+import { ValidationError, ExtractionUnavailableError, UploadExpiredError } from '@/errors';
 import { pendingHashes } from '@/services/pendingHashes';
 import { extractImageNumber } from '@/utils/imageNumber';
 import logger from '@/utils/logger';
@@ -471,6 +471,18 @@ router.get('/games', authenticateToken, resolveSquad, async (req: Request, res: 
 // Get specific game details
 router.get('/games/:gameId', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
+    // A timed-out upload is the caller's to fix by re-uploading, not a server fault. 410
+    // with a code the client can branch on, rather than a 500 that reads as "we lost it".
+    if (error instanceof UploadExpiredError) {
+      logger.info({ squadId: requireSquadId(req) }, 'Save rejected — upload expired');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(error.status).json({
+        success: false,
+        code: 'UPLOAD_EXPIRED',
+        error: error.message,
+      });
+    }
+
     const { gameId } = req.params;
 
     // Indexed single-row lookup, not a full squad scan + .find(). getGameById already

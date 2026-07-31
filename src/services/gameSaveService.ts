@@ -24,6 +24,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import supabaseService, { DuplicateGameError } from '@/services/supabase';
+import { UploadExpiredError } from '@/errors';
 import { pendingHashes } from '@/services/pendingHashes';
 import { Game, Player } from '@/types';
 import { extractImageNumber } from '@/utils/imageNumber';
@@ -242,6 +243,15 @@ export async function saveReviewedGame(
     gameId,
     squadId,
   });
+
+  // Refuse a save whose upload has timed out, rather than quietly storing the game with no
+  // perceptual hash. `expired` is only ever reported for a key the bridge actually held and
+  // watched lapse, so a direct save — or one whose upload predates a restart — still falls
+  // through to the null-hash path below exactly as before.
+  if (pendingHashes.status(imageUrl) === 'expired') {
+    logger.info({ squadId, imageUrl }, 'Save refused: the upload behind it has expired');
+    throw new UploadExpiredError();
+  }
 
   // Retrieve the perceptual hash stored at upload time (null if upload route not used).
   // Deliberately NOT removed from the map yet — if the save below throws, the entry must

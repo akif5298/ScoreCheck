@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import supabaseService, { pgPool } from './supabase';
 import { createPersonalSquad, getInvitePreview } from './squadService';
+import { assessPassword } from './passwordPolicy';
 import { User, JwtPayload } from '@/types';
 import logger from '@/utils/logger';
 
@@ -109,6 +110,13 @@ export class AuthService {
       throw new AuthError(409, 'An account with this email already exists');
     }
 
+    // Breach + weakness check before the expensive hash, and before any row is written.
+    // Fails open on an unreachable HIBP — see services/passwordPolicy.ts.
+    const verdict = await assessPassword(input.password);
+    if (!verdict.ok) {
+      throw new AuthError(400, verdict.reason!);
+    }
+
     const passwordHash = await bcrypt.hash(input.password, BCRYPT_COST);
 
     // The user and their personal squad are created together: an account with no personal
@@ -160,6 +168,13 @@ export class AuthService {
     const valid = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!valid) {
       throw new AuthError(401, 'Current password is incorrect');
+    }
+
+    // Only after the current password is proven: an unauthenticated caller must not be able
+    // to use this endpoint as a free breach-lookup oracle for arbitrary strings.
+    const verdict = await assessPassword(newPassword);
+    if (!verdict.ok) {
+      throw new AuthError(400, verdict.reason!);
     }
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_COST);

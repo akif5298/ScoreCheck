@@ -425,3 +425,33 @@ describe("the two row modes are mutually exclusive", () => {
     expect(screen.queryByPlaceholderText("Gamertag")).not.toBeInTheDocument();
   });
 });
+
+describe("optimistic mapping delete", () => {
+  async function confirmDeleteOf(name: string) {
+    await renderLoaded();
+    const row = rowFor(name);
+    await userEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await userEvent.click(within(row).getByRole("button", { name: "Yes" }));
+  }
+
+  it("removes the row before the server answers", async () => {
+    // A request that never settles: whatever is on screen is there optimistically.
+    del.mockReturnValue(new Promise(() => {}) as never);
+
+    await confirmDeleteOf("Akif");
+
+    await waitFor(() => expect(screen.queryByText("Akif")).not.toBeInTheDocument());
+    // The untouched row stays put — this removes one mapping, not the list.
+    expect(screen.getByText("Nillan")).toBeInTheDocument();
+  });
+
+  it("restores the row when the server refuses", async () => {
+    del.mockRejectedValue(new Error("Mapping not found"));
+
+    await confirmDeleteOf("Akif");
+
+    // The rollback half. Without it a refused delete leaves the roster looking edited.
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("Mapping not found"));
+    expect(await screen.findByText("Akif")).toBeInTheDocument();
+  });
+});

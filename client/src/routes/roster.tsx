@@ -79,12 +79,32 @@ function RosterPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.del(`/api/mappings/${id}`),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["mappings"] });
-      toast.success("Mapping deleted");
+    // Optimistic: the row goes immediately and comes back if the server refuses.
+    //
+    // Safe to predict here because a delete has exactly one possible successful outcome.
+    // The create and update mutations above are deliberately NOT optimistic: the server
+    // decides the new id and reports how many past games a mapping renamed, and guessing
+    // either would show the user a number the server never produced.
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["mappings"] });
+      const previous = qc.getQueryData<PlayerMapping[]>(["mappings"]);
+      qc.setQueryData<PlayerMapping[]>(["mappings"], (old) =>
+        old?.filter((m) => m.id !== id),
+      );
       setConfirmDeleteId(null);
+      return { previous };
     },
-    onError: (err: Error) => toast.error(err.message),
+    onSuccess: () => {
+      toast.success("Mapping deleted");
+    },
+    onError: (err: Error, _id, context) => {
+      // Without this the row stays gone after a refusal and the user believes it worked.
+      if (context?.previous) qc.setQueryData(["mappings"], context.previous);
+      toast.error(err.message);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["mappings"] });
+    },
   });
 
   const {

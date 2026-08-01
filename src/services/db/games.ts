@@ -269,6 +269,56 @@ export class GamesService extends AggregatesService {
     }
   }
 
+  /**
+   * One page of a squad's games, newest first.
+   *
+   * Separate from getGamesBySquadId rather than an option on it, deliberately: six of that
+   * method's seven callers are in analytics.ts and need EVERY game to compute squad
+   * aggregates. Adding a default page size there would have silently produced analytics
+   * over the first page only — wrong numbers, no error.
+   *
+   * ORDER BY is not cosmetic here. The unpaginated query has no ordering at all, which is
+   * harmless when you fetch the whole set; under LIMIT/OFFSET an unstable sort lets rows
+   * repeat on one page and vanish from another. "date" alone is not unique, so id breaks
+   * ties and makes the sort total.
+   */
+  async getGamesPageBySquadId(squadId: string, limit: number, offset: number) {
+    try {
+      const query = `
+        SELECT g.*,
+               COALESCE(json_agg(DISTINCT p.*) FILTER (WHERE p.id IS NOT NULL), '[]') as players,
+               COALESCE(json_agg(DISTINCT t.*) FILTER (WHERE t.id IS NOT NULL), '[]') as teams
+        FROM games g
+        LEFT JOIN players p ON g.id = p."gameId"
+        LEFT JOIN teams t ON g.id = t."gameId"
+        WHERE g."squadId" = $1
+        GROUP BY g.id
+        ORDER BY g.date DESC, g.id DESC
+        LIMIT $2 OFFSET $3
+      `;
+
+      const result = await pgPool.query(query, [squadId, limit, offset]);
+      return result.rows;
+    } catch (error) {
+      logger.error({ err: error }, 'Error getting page of games by squad ID');
+      throw error;
+    }
+  }
+
+  /** Total games in a squad — the denominator for the page count. */
+  async countGamesBySquadId(squadId: string): Promise<number> {
+    try {
+      const result = await pgPool.query<{ count: string }>(
+        'SELECT COUNT(*)::text AS count FROM games WHERE "squadId" = $1',
+        [squadId],
+      );
+      return Number(result.rows[0]?.count ?? 0);
+    } catch (error) {
+      logger.error({ err: error }, 'Error counting games by squad ID');
+      throw error;
+    }
+  }
+
   async getDistinctPlayerCount(squadId: string): Promise<number> {
     try {
       // Count distinct players by their name column (normalized to handle case/whitespace differences)

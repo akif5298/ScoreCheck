@@ -20,8 +20,8 @@ import {
   getMappingById,
   deleteMapping,
   applyRetroactiveMapping,
-  applyMapping,
 } from '@/services/mappingService';
+import { applyMapping } from '@/services/nameMapping';
 import { makeUser, makeSquad, makeMapping } from './factories';
 
 /** A squad plus its owner — the common setup for every scoping test. */

@@ -31,7 +31,7 @@ import fs from 'fs';
 import path from 'path';
 import { Client } from 'pg';
 import supabaseService, { pgPool } from '@/services/supabase';
-import { applyMapping } from '@/services/mappingService';
+import { applyMapping } from '@/services/nameMapping';
 import { getLineupEfficiency } from '@/services/lineupEfficiency';
 
 dotenv.config();

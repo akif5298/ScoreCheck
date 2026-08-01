@@ -19,7 +19,8 @@ import path from 'path'
 dotenv.config({ path: path.resolve(__dirname, '../.env') })
 
 import * as fs from 'fs';
-import { getMappingsForSquad, applyMapping } from '../src/services/mappingService';
+import { getMappingsForSquad } from '../src/services/mappingService';
+import { applyMapping } from '../src/services/nameMapping';
 import { resolveSquadId } from '../src/services/squadService';
 import { pgPool } from '../src/services/supabase';
 

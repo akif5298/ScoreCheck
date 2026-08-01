@@ -88,9 +88,7 @@ function RosterPage() {
     onMutate: async (id: string) => {
       await qc.cancelQueries({ queryKey: ["mappings"] });
       const previous = qc.getQueryData<PlayerMapping[]>(["mappings"]);
-      qc.setQueryData<PlayerMapping[]>(["mappings"], (old) =>
-        old?.filter((m) => m.id !== id),
-      );
+      qc.setQueryData<PlayerMapping[]>(["mappings"], (old) => old?.filter((m) => m.id !== id));
       setConfirmDeleteId(null);
       return { previous };
     },

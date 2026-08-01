@@ -531,12 +531,7 @@ describe("moving games to another squad", () => {
 
 describe("pagination", () => {
   /** Games list responses now carry page metadata; older shapes omit it entirely. */
-  function pagedGet(meta: {
-    page: number;
-    pageSize: number;
-    total: number;
-    totalPages: number;
-  }) {
+  function pagedGet(meta: { page: number; pageSize: number; total: number; totalPages: number }) {
     get.mockImplementation((path: string) => {
       if (path.includes("/screenshots/games")) {
         const page = Number(new URLSearchParams(path.split("?")[1]).get("page") ?? 1);
@@ -576,9 +571,7 @@ describe("pagination", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: /next/i }));
 
-    await waitFor(() =>
-      expect(get).toHaveBeenCalledWith(expect.stringContaining("page=2")),
-    );
+    await waitFor(() => expect(get).toHaveBeenCalledWith(expect.stringContaining("page=2")));
     expect(await screen.findByText(/page 2 of 2/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /previous/i })).toBeEnabled();
@@ -635,7 +628,9 @@ describe("optimistic delete", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
     // Gone from the table with the request still in flight — the point of the change.
-    await waitFor(() => expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument(),
+    );
     // getAllByText: the name appears in both the row link and the "won" badge.
     expect(screen.getAllByText(/Second Game/).length).toBeGreaterThan(0);
   });
@@ -671,6 +666,8 @@ describe("optimistic delete", () => {
 
     // Only asserts the count was adjusted in the cache, not that controls render — with
     // one page there is no pagination footer to read it from.
-    await waitFor(() => expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText(/Akif \(PG\) vs Team B/)).not.toBeInTheDocument(),
+    );
   });
 });

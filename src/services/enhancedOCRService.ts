@@ -1,6 +1,6 @@
 import { Player, GameData } from '../types';
 import logger from '@/utils/logger';
-import { applyMapping } from './mappingService';
+import { applyMapping } from './nameMapping';
 import { extractBoxScore } from './ollamaExtractor';
 
 export class EnhancedOCRService {

@@ -1,8 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AppShell, Card, Badge } from "@/components/app-shell";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -55,10 +61,19 @@ interface Member {
   email: string;
 }
 
+interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
 interface ApiResponse<T> {
   success: boolean;
   data: T;
   error?: string;
+  /** Present on paginated list endpoints only. */
+  meta?: PaginationMeta;
 }
 
 interface MoveResult {
@@ -75,18 +90,29 @@ function GamesPage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState<Game | null>(null);
+  const [page, setPage] = useState(1);
+
+  // Switching squads must not leave you on page 4 of a squad that has one page.
+  useEffect(() => {
+    setPage(1);
+  }, [activeSquad?.id]);
 
   const isOwner = activeSquad?.role === "OWNER";
   const moveTargets = squads.filter((s) => s.id !== activeSquad?.id);
 
   const {
-    data: games = [],
+    data: gamesPage,
     isLoading,
     error,
   } = useQuery({
-    queryKey: ["games", activeSquad?.id],
-    queryFn: () => api.get<ApiResponse<Game[]>>("/api/screenshots/games").then((r) => r.data),
+    queryKey: ["games", activeSquad?.id, page],
+    queryFn: () => api.get<ApiResponse<Game[]>>(`/api/screenshots/games?page=${page}`),
+    // Keeps the current page on screen while the next one loads, instead of collapsing to
+    // the empty/loading state on every page change.
+    placeholderData: keepPreviousData,
   });
+  const games = gamesPage?.data ?? [];
+  const meta = gamesPage?.meta;
 
   // Attribution names, only meaningful in a shared squad.
   const { data: members = [] } = useQuery({
@@ -117,15 +143,44 @@ function GamesPage() {
 
   const del = useMutation({
     mutationFn: (gameId: string) => api.del(`/api/screenshots/games/${gameId}`),
-    onSuccess: () => {
-      toast.success("Game deleted");
+    // Optimistic: drop the row immediately, put it back if the server refuses.
+    //
+    // Every cached page is patched, not just the visible one, because the delete can be
+    // confirmed from a dialog after paging around. The snapshot returned here is the whole
+    // set of previous page caches, so a rollback restores all of them together.
+    onMutate: async (gameId: string) => {
+      await qc.cancelQueries({ queryKey: ["games"] });
+      const previous = qc.getQueriesData<ApiResponse<Game[]>>({ queryKey: ["games"] });
+
+      qc.setQueriesData<ApiResponse<Game[]>>({ queryKey: ["games"] }, (old) =>
+        old
+          ? {
+              ...old,
+              data: old.data.filter((g) => g.id !== gameId),
+              // Keep the count honest while the request is in flight, or the footer reads
+              // "25 of 60" against 24 visible rows.
+              meta: old.meta ? { ...old.meta, total: Math.max(0, old.meta.total - 1) } : undefined,
+            }
+          : old,
+      );
+
       setConfirmDelete(null);
       setSelected(new Set());
-      qc.invalidateQueries({ queryKey: ["games"] });
+      return { previous };
     },
-    onError: (err: Error) => {
+    onSuccess: () => {
+      toast.success("Game deleted");
+    },
+    onError: (err: Error, _gameId, context) => {
+      // Restore every page cache captured before the optimistic edit.
+      context?.previous?.forEach(([key, data]) => qc.setQueryData(key, data));
       toast.error(err.message);
       setConfirmDelete(null);
+    },
+    // Reconcile with the server either way: an optimistic delete leaves the current page
+    // one row short until the next page's first row is pulled up.
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["games"] });
     },
   });
 
@@ -319,6 +374,38 @@ function GamesPage() {
               </tbody>
             </table>
           </div>
+        )}
+
+        {meta && meta.totalPages > 1 && (
+          <nav
+            className="flex items-center justify-between gap-4 border-t border-border pt-4 mt-4"
+            aria-label="Games pagination"
+          >
+            <p className="text-sm text-muted-foreground" aria-live="polite">
+              Page {meta.page} of {meta.totalPages} · {meta.total} game
+              {meta.total === 1 ? "" : "s"}
+            </p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={meta.page <= 1}
+                title="Go to the previous page of games"
+              >
+                Previous
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(meta.totalPages, p + 1))}
+                disabled={meta.page >= meta.totalPages}
+                title="Go to the next page of games"
+              >
+                Next
+              </Button>
+            </div>
+          </nav>
         )}
       </Card>
 

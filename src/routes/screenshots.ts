@@ -31,6 +31,12 @@ import {
 } from '@/services/mappingService';
 import { ALLOWED_IMAGE_MIME_TYPES } from '@/constants';
 import {
+  saveBodySchema,
+  updateGameBodySchema,
+  generateTeamNamesBodySchema,
+  firstIssueMessage,
+} from '@/validation/screenshotSchemas';
+import {
   upload,
   uploadRateLimit,
   warmupRateLimit,
@@ -40,6 +46,28 @@ import {
 } from '@/middleware/uploadQuota';
 
 const router = Router();
+
+// Page params for list endpoints.
+//
+// Clamped rather than rejected: a bad ?page= is not worth a 400 on a read, and clamping
+// keeps the response shape predictable. The pageSize ceiling is the real point — without
+// it a caller could ask for pageSize=1000000 and reinstate the unbounded query pagination
+// exists to remove.
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+function parsePageParams(req: Request): { page: number; pageSize: number } {
+  const rawPage = Number(req.query.page);
+  const rawPageSize = Number(req.query.pageSize);
+
+  const page = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+  const pageSize =
+    Number.isFinite(rawPageSize) && rawPageSize >= 1
+      ? Math.min(Math.floor(rawPageSize), MAX_PAGE_SIZE)
+      : DEFAULT_PAGE_SIZE;
+
+  return { page, pageSize };
+}
 
 // The batch path signals a duplicate by tagging an Error with a code, because it has to
 // unwind out of a per-file promise rather than return a response directly.
@@ -404,6 +432,16 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
       return res.status(400).json(response);
     }
 
+    // Shape and bounds. Runs after the presence check so that message — which the client
+    // and its tests rely on — still answers the common case.
+    const parsed = saveBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        error: firstIssueMessage(parsed.error),
+      } as ApiResponse);
+    }
+
     const result = await saveReviewedGame({
       squadId: requireSquadId(req),
       userId: requireUserId(req),
@@ -460,11 +498,25 @@ router.post('/save', authenticateToken, resolveSquad, async (req: Request, res: 
 // Get all games for a user
 router.get('/games', authenticateToken, resolveSquad, async (req: Request, res: Response) => {
   try {
-    const games = await supabaseService.getGamesBySquadId(requireSquadId(req));
+    const squadId = requireSquadId(req);
+    const { page, pageSize } = parsePageParams(req);
+
+    // Count and page fetched together: the client needs the total to render controls, and
+    // both are cheap indexed reads on squadId.
+    const [total, games] = await Promise.all([
+      supabaseService.countGamesBySquadId(squadId),
+      supabaseService.getGamesPageBySquadId(squadId, pageSize, (page - 1) * pageSize),
+    ]);
 
     const response: ApiResponse<Game[]> = {
       success: true,
       data: games,
+      meta: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
     };
 
     return res.status(200).json(response);
@@ -552,6 +604,14 @@ router.post('/generate-team-names', authenticateToken, resolveSquad, async (req:
       return res.status(400).json(response);
     }
 
+    const parsedNames = generateTeamNamesBodySchema.safeParse(req.body);
+    if (!parsedNames.success) {
+      return res.status(400).json({
+        success: false,
+        error: firstIssueMessage(parsedNames.error),
+      } as ApiResponse);
+    }
+
     // Generate custom team names from the user's mapped display names
     const customNames = await getAllowedNamesArray(requireSquadId(req));
     const { teamAName, teamBName } = EnhancedOCRService.generateCustomTeamNamesAfterAssignment(
@@ -594,6 +654,14 @@ router.put('/games/:gameId', authenticateToken, resolveSquad, async (req: Reques
         error: 'Missing required fields: homeTeam, awayTeam, homeScore, awayScore, date, players',
       };
       return res.status(400).json(response);
+    }
+
+    const parsedUpdate = updateGameBodySchema.safeParse(req.body);
+    if (!parsedUpdate.success) {
+      return res.status(400).json({
+        success: false,
+        error: firstIssueMessage(parsedUpdate.error),
+      } as ApiResponse);
     }
 
     // allowedNames is no longer passed: updateGame rebuilds aggregates via

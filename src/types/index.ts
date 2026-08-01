@@ -201,11 +201,26 @@ export interface AnalyticsData {
   };
 }
 
+/** Page descriptor returned alongside a paginated list. */
+export interface PaginationMeta {
+  page: number;
+  pageSize: number;
+  /** Total matching rows across all pages, not just this one. */
+  total: number;
+  totalPages: number;
+}
+
 export interface ApiResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
   message?: string;
+  /**
+   * Present only on paginated list endpoints. Additive on purpose: `data` keeps its plain
+   * array shape so existing consumers reading `res.data` are unaffected by pagination
+   * being introduced.
+   */
+  meta?: PaginationMeta;
 }
 
 export interface ExtractedRow {

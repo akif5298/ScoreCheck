@@ -836,6 +836,22 @@ describe('POST /save — the real write path', () => {
   it('falls back to the array index when the id carries no slot', async () => {
     const me = await actor();
     // tenPlayers() uses bare ids ("0".."9"), which the /_(\d+)_/ pattern does not match.
+    await request(app())
+      .post('/api/screenshots/save')
+      .set('Authorization', me.auth)
+      .send({ gameData, playersData: tenPlayers(), imageUrl: 'stored/fallback.png' });
+
+    const { rows } = await pgPool.query<{ name: string; position: string }>(
+      'SELECT name, position FROM players WHERE "squadId" = $1',
+      [me.squad.id],
+    );
+    const byName = Object.fromEntries(rows.map((r) => [r.name, r.position]));
+    // index + 1, so the first row becomes slot 1 (SG) rather than slot 0 (PG). Worth
+    // knowing: the two id shapes produce different positions for the same lineup.
+    expect(byName['P0']).toBe('SG');
+    expect(byName['P9']).toBe('Unknown');
+  });
+
   it('410s when the upload behind the save has timed out', async () => {
     const me = await actor();
     const { pendingHashes } = await import('@/services/pendingHashes');
@@ -888,22 +904,6 @@ describe('POST /save — the real write path', () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]!.imageHash).toBeNull();
-  });
-
-    await request(app())
-      .post('/api/screenshots/save')
-      .set('Authorization', me.auth)
-      .send({ gameData, playersData: tenPlayers(), imageUrl: 'stored/fallback.png' });
-
-    const { rows } = await pgPool.query<{ name: string; position: string }>(
-      'SELECT name, position FROM players WHERE "squadId" = $1',
-      [me.squad.id],
-    );
-    const byName = Object.fromEntries(rows.map((r) => [r.name, r.position]));
-    // index + 1, so the first row becomes slot 1 (SG) rather than slot 0 (PG). Worth
-    // knowing: the two id shapes produce different positions for the same lineup.
-    expect(byName['P0']).toBe('SG');
-    expect(byName['P9']).toBe('Unknown');
   });
 
   it('sums each side into its own team row', async () => {

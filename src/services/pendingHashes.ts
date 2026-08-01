@@ -18,15 +18,32 @@
  *
  * Bounded and self-expiring (see TtlMap): entries are cleared on the terminal paths, but an
  * upload abandoned at the review step has no terminal path and would otherwise pin its entry
- * for the process's lifetime. Six hours is far longer than a review takes; the cap is the
- * backstop. Losing an entry is safe — a miss reads as "no hash known" and the game is stored
- * without one, costing future dedup on that single screenshot and nothing else.
+ * for the process's lifetime.
  *
- * Single-instance only, and lost on restart.
+ * THIRTY MINUTES, and the save then FAILS rather than degrading. Reviewing a box score takes
+ * a minute or two, so half an hour is generous. Previously the window was six hours and a
+ * lapsed entry simply read as "no hash known", so the game saved with a null imageHash —
+ * permanently invisible to duplicate detection, with nothing shown to the user. Now the save
+ * is refused with UploadExpiredError and the screenshot has to be uploaded again, which
+ * costs one re-upload instead of silently weakening dedup forever.
+ *
+ * The grace window is long (24h) because it only governs how long we can still EXPLAIN the
+ * timeout. Past it the key reads as `unknown` and the old degrade-quietly behaviour returns,
+ * so it is set far beyond any plausible review session.
+ *
+ * Single-instance only, and lost on restart — after a restart a lapsed upload reads as
+ * `unknown` rather than `expired`, so a deploy mid-review degrades quietly instead of
+ * demanding a re-upload. That is the deliberate trade: never wrongly blame the user for a
+ * timeout that was actually our process going away.
  */
 import { TtlMap } from '@/utils/ttlMap';
 
-const PENDING_HASH_TTL_MS = 6 * 60 * 60 * 1000;
+const PENDING_HASH_TTL_MS = 30 * 60 * 1000;
+const PENDING_HASH_GRACE_MS = 24 * 60 * 60 * 1000;
 const PENDING_HASH_MAX_ENTRIES = 5000;
 
-export const pendingHashes = new TtlMap<string>(PENDING_HASH_TTL_MS, PENDING_HASH_MAX_ENTRIES);
+export const pendingHashes = new TtlMap<string>(
+  PENDING_HASH_TTL_MS,
+  PENDING_HASH_MAX_ENTRIES,
+  PENDING_HASH_GRACE_MS,
+);

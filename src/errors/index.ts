@@ -93,3 +93,27 @@ export class NotFoundError extends Error {
     this.name = 'NotFoundError';
   }
 }
+
+/**
+ * The review step was left too long: the perceptual hash captured at upload time has aged
+ * out of the in-memory bridge (services/pendingHashes.ts), so the screenshot has to be
+ * uploaded again.
+ *
+ * 410 rather than 404 or 400: the upload genuinely existed and is genuinely gone, and the
+ * caller's request is not malformed. Saving anyway is the alternative this replaces — it
+ * stored the game with a null imageHash, leaving that screenshot permanently invisible to
+ * duplicate detection without telling anyone.
+ *
+ * Raised ONLY when the bridge remembers the key timing out. A screenshot it never held
+ * (a direct save, or one predating a restart) still saves without a hash, because a
+ * timeout cannot be attributed in that case — see TtlMap.status.
+ */
+export class UploadExpiredError extends Error {
+  readonly status = 410;
+  constructor(
+    message = 'This upload has expired. Please upload the screenshot again to save it.',
+  ) {
+    super(message);
+    this.name = 'UploadExpiredError';
+  }
+}

@@ -106,3 +106,91 @@ describe('TtlMap', () => {
     expect(map.delete('a')).toBe(false);
   });
 });
+
+describe('TtlMap.status', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('separates a key that timed out from one it never held', () => {
+    // The whole point of the tombstone: the save path tells a user their upload expired
+    // only when it actually expired. A key it never knew must stay indistinguishable from
+    // a save that legitimately never went through the upload route.
+    const map = new TtlMap<string>(1000, 10, 5000);
+    map.set('known', 'hash');
+
+    expect(map.status('known')).toBe('fresh');
+    expect(map.status('never-seen')).toBe('unknown');
+
+    jest.advanceTimersByTime(1000);
+
+    expect(map.status('known')).toBe('expired');
+    expect(map.status('never-seen')).toBe('unknown');
+  });
+
+  it('forgets that a key expired once the grace window closes', () => {
+    const map = new TtlMap<string>(1000, 10, 5000);
+    map.set('a', 'hash');
+
+    jest.advanceTimersByTime(1000 + 5000);
+
+    expect(map.status('a')).toBe('unknown');
+  });
+
+  it('defaults the grace window to the TTL', () => {
+    const map = new TtlMap<string>(1000, 10);
+    map.set('a', 'hash');
+
+    jest.advanceTimersByTime(1500);
+    expect(map.status('a')).toBe('expired');
+
+    jest.advanceTimersByTime(600);
+    expect(map.status('a')).toBe('unknown');
+  });
+
+  it('treats a re-set key as fresh again, clearing the tombstone', () => {
+    // Re-uploading the same screenshot after a timeout has to work, not stay stuck
+    // reporting `expired` forever.
+    const map = new TtlMap<string>(1000, 10, 60_000);
+    map.set('a', 'hash-1');
+    jest.advanceTimersByTime(1000);
+    expect(map.status('a')).toBe('expired');
+
+    map.set('a', 'hash-2');
+
+    expect(map.status('a')).toBe('fresh');
+    expect(map.get('a')).toBe('hash-2');
+  });
+
+  it('reports a consumed key as unknown, not expired', () => {
+    // delete() marks a terminal outcome — the save committed. A later lookup must not
+    // claim the upload timed out, which would be a confusing lie.
+    const map = new TtlMap<string>(1000, 10, 60_000);
+    map.set('a', 'hash');
+    map.delete('a');
+
+    expect(map.status('a')).toBe('unknown');
+
+    jest.advanceTimersByTime(1000);
+    expect(map.status('a')).toBe('unknown');
+  });
+
+  it('keeps tombstones out of size and out of the live cap', () => {
+    const map = new TtlMap<string>(1000, 2, 60_000);
+    map.set('a', 'hash-a');
+    map.set('b', 'hash-b');
+
+    jest.advanceTimersByTime(1000);
+    // Both are expired; inserting now must not evict c to make room for dead entries.
+    map.set('c', 'hash-c');
+
+    expect(map.size).toBe(1);
+    expect(map.get('c')).toBe('hash-c');
+    expect(map.status('a')).toBe('expired');
+    expect(map.status('b')).toBe('expired');
+  });
+});
